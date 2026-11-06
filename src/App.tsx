@@ -124,6 +124,7 @@ export default function App() {
 
       let generatedImageUrl: string | undefined = undefined;
       let modelUsed = 'Prompt Engine v0.2';
+      let quotaNotice: string | undefined = undefined;
 
       // Step 4: Image Generation (if GENERATE mode)
       if (mode === 'GENERATE') {
@@ -139,6 +140,7 @@ export default function App() {
               aspectRatio: updatedConfig.aspectRatio,
               faceMasterBase64: faceAsset?.isConnected ? faceAsset.imageUrl : undefined,
               shotType: updatedConfig.shotType,
+              expression: updatedConfig.expression,
               glasses: updatedConfig.glasses,
               sceneDescription: updatedConfig.sceneDescription,
             }),
@@ -148,6 +150,7 @@ export default function App() {
             const genData = await genRes.json();
             generatedImageUrl = genData.imageUrl;
             modelUsed = genData.modelUsed || 'gemini-3.1-flash-lite-image';
+            quotaNotice = genData.quotaNotice;
           }
         } catch (genErr) {
           console.warn('Error en /api/generate-candidate:', genErr);
@@ -164,6 +167,9 @@ export default function App() {
       };
 
       let modelAuditNotes = {};
+      let auditStatus: 'SUCCESS' | 'FAILED' | 'UNSUPPORTED_FORMAT' | 'EMPTY' | 'MALFORMED' | 'NOT_RUN' = 'NOT_RUN';
+      let auditErrorMessage: string | undefined = undefined;
+
       if (generatedImageUrl) {
         try {
           const auditRes = await fetch('/api/audit-candidate', {
@@ -178,9 +184,15 @@ export default function App() {
           if (auditRes.ok) {
             const auditData = await auditRes.json();
             modelAuditNotes = auditData.modelAuditNotes || {};
+            auditStatus = auditData.auditStatus || (Object.keys(modelAuditNotes).length > 0 ? 'SUCCESS' : 'EMPTY');
+            auditErrorMessage = auditData.auditMessage;
+          } else {
+            auditStatus = 'FAILED';
+            auditErrorMessage = `HTTP ${auditRes.status}`;
           }
-        } catch (auditErr) {
-          console.warn('Multimodal audit fallback:', auditErr);
+        } catch (auditErr: any) {
+          auditStatus = 'FAILED';
+          auditErrorMessage = auditErr?.message || String(auditErr);
         }
       }
 
@@ -189,6 +201,8 @@ export default function App() {
         canonicalStatus: canonicalStatusMap,
         hasGeneratedImage: Boolean(generatedImageUrl),
         modelAuditNotes,
+        auditStatus,
+        auditErrorMessage,
       });
 
       const finalResult: ProductionResult = {
@@ -203,6 +217,7 @@ export default function App() {
         generatedImageUrl,
         continuityAudit: auditReport,
         modelUsed,
+        quotaNotice,
       };
 
       setProductionResult(finalResult);

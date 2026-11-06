@@ -1,14 +1,162 @@
-import { AuditCriterion, AuditVerdict, CanonicalAssetId, ContinuityAuditReport, SceneConfig } from './types';
+import {
+  AssessmentType,
+  AuditCriterion,
+  AuditVerdict,
+  CanonicalAssetId,
+  ContinuityAuditReport,
+  SceneConfig,
+} from './types';
 
 export interface AuditInputParams {
   sceneConfig: SceneConfig;
   canonicalStatus: Record<CanonicalAssetId, boolean>;
   hasGeneratedImage: boolean;
   modelAuditNotes?: Partial<Record<string, { verdict: AuditVerdict; observations: string; evidence: string }>>;
+  auditStatus?: 'SUCCESS' | 'FAILED' | 'UNSUPPORTED_FORMAT' | 'EMPTY' | 'MALFORMED' | 'NOT_RUN';
+  auditErrorMessage?: string;
+}
+
+interface ValidatedCriterionResult {
+  verdict: AuditVerdict;
+  observations: string;
+  evidence: string;
+  assessmentType: AssessmentType;
+}
+
+/**
+ * Validates a single criterion note from multimodal inspection.
+ * Enforces:
+ * - No default PASS without actual visual evidence.
+ * - Incomplete/missing/empty evidence -> UNVERIFIED.
+ * - Malformed responses -> UNVERIFIED / TECHNICAL_FAILURE.
+ * - Contradictory responses (claiming PASS while describing failure) -> FAIL / safe failure.
+ */
+function validateModelCriterionNote(
+  criterionId: string,
+  raw: any,
+  sceneConfig: SceneConfig,
+  auditStatus?: string
+): ValidatedCriterionResult {
+  if (auditStatus === 'FAILED') {
+    return {
+      verdict: 'UNVERIFIED',
+      observations: 'Auditoría visual no realizada debido a fallo técnico en el servicio de análisis multimodal.',
+      evidence: 'Fallo técnico reportado por el servicio de auditoría.',
+      assessmentType: 'TECHNICAL_FAILURE',
+    };
+  }
+
+  // If no note provided or empty object
+  if (!raw || typeof raw !== 'object') {
+    return {
+      verdict: 'UNVERIFIED',
+      observations: 'Sin comprobación visual multimodal: no se recibió análisis específico para este criterio.',
+      evidence: 'Ausencia de datos evaluados por el auditor multimodal.',
+      assessmentType: 'UNVERIFIED_NO_EVIDENCE',
+    };
+  }
+
+  // Validate verdict format
+  const validVerdicts: AuditVerdict[] = ['PASS', 'REVIEW', 'FAIL', 'UNVERIFIED'];
+  if (!raw.verdict || typeof raw.verdict !== 'string' || !validVerdicts.includes(raw.verdict as AuditVerdict)) {
+    return {
+      verdict: 'UNVERIFIED',
+      observations: 'Respuesta del modelo malformada: veredicto inválido o no reconocido.',
+      evidence: `Veredicto devuelto: "${String(raw.verdict)}". Se rechaza por formato inválido.`,
+      assessmentType: 'TECHNICAL_FAILURE',
+    };
+  }
+
+  const rawVerdict = raw.verdict as AuditVerdict;
+  const observations = typeof raw.observations === 'string' ? raw.observations.trim() : '';
+  const evidence = typeof raw.evidence === 'string' ? raw.evidence.trim() : '';
+
+  // Malformed: empty observations
+  if (observations.length === 0) {
+    return {
+      verdict: 'UNVERIFIED',
+      observations: 'Respuesta del modelo incompleta: campo de observaciones vacío.',
+      evidence: 'Falta descripción analítica en la respuesta del modelo.',
+      assessmentType: 'TECHNICAL_FAILURE',
+    };
+  }
+
+  // Partial evidence -> no automatic PASS
+  if (rawVerdict === 'PASS' && evidence.length < 5) {
+    return {
+      verdict: 'UNVERIFIED',
+      observations:
+        'Evidencia visual insuficiente: el modelo emitió veredicto aprobatorio sin aportar soporte visual contrastable.',
+      evidence: 'Evidencia omitida o insuficiente en el informe del modelo.',
+      assessmentType: 'UNVERIFIED_NO_EVIDENCE',
+    };
+  }
+
+  // Contradictory audit results -> safe failure
+  if (rawVerdict === 'PASS') {
+    const textToCheck = `${observations} ${evidence}`.toLowerCase();
+    const contradictionTriggers = [
+      'discrepancia severa',
+      'discrepancia',
+      'no coincide',
+      'incompatible',
+      'no se parece',
+      'distorsión severa',
+      'deformidad',
+      'falla crítica',
+      'no corresponde a diego',
+      'ojos de otro color',
+      'sin barba cuando requiere barba',
+      'rasgos faciales distintos',
+      'no cumple con la norma',
+    ];
+    const foundContradiction = contradictionTriggers.find((trigger) => textToCheck.includes(trigger));
+    if (foundContradiction) {
+      return {
+        verdict: 'FAIL',
+        observations: `Fallo de seguridad (Resultado Contradictorio): El modelo asignó PASS pero reportó discrepancia ("${foundContradiction}"): ${observations}`,
+        evidence: `Evidencia contradictoria en el reporte: ${evidence}`,
+        assessmentType: 'TECHNICAL_FAILURE',
+      };
+    }
+
+    // Domain constraint conflict for glasses: off
+    if (criterionId === 'crit_accessories' && sceneConfig.glasses === 'off') {
+      if (
+        textToCheck.includes('lleva gafas') ||
+        textToCheck.includes('porta gafas') ||
+        textToCheck.includes('gafas visibles') ||
+        textToCheck.includes('montura detectada')
+      ) {
+        return {
+          verdict: 'FAIL',
+          observations:
+            'Contradicción con directiva: Se detectaron gafas visibles en el candidato cuando la directiva de escena exigía sin gafas.',
+          evidence: evidence,
+          assessmentType: 'VERIFIED_COMPARISON',
+        };
+      }
+    }
+  }
+
+  // Explicitly verified result
+  return {
+    verdict: rawVerdict,
+    observations,
+    evidence: evidence || 'Sin evidencia adicional registrada.',
+    assessmentType: 'VERIFIED_COMPARISON',
+  };
 }
 
 export function runContinuityAudit(params: AuditInputParams): ContinuityAuditReport {
-  const { sceneConfig, canonicalStatus, hasGeneratedImage, modelAuditNotes = {} } = params;
+  const {
+    sceneConfig,
+    canonicalStatus,
+    hasGeneratedImage,
+    modelAuditNotes = {},
+    auditStatus = 'NOT_RUN',
+    auditErrorMessage,
+  } = params;
 
   if (!hasGeneratedImage) {
     return {
@@ -18,13 +166,13 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
         'Auditoría no ejecutable: No se ha generado imagen candidata en esta corrida (modo SOLO PREPARAR o generación pendiente).',
       criteria: [],
       suggestedCorrections: ['Ejecutar el modo GENERAR para obtener un candidato fotográfico analizable.'],
+      auditExecutionStatus: 'NOT_RUN',
     };
   }
 
   const criteria: AuditCriterion[] = [];
   const suggestedCorrections: string[] = [];
 
-  // Helper to determine status given reference availability
   const faceMasterConnected = canonicalStatus['01_FACE_MASTER'] === true;
   const bodyMasterConnected = canonicalStatus['02_BODY_MASTER'] === true;
   const accessoriesMasterConnected = canonicalStatus['03_ACCESSORIES_MASTER'] === true;
@@ -40,21 +188,24 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       observations: '01_FACE_MASTER no está conectado en el proyecto. No es posible auditar la fidelidad ósea.',
       evidence: 'Ausencia de anclaje de referencia de 4 ángulos de Diego Navarro.',
       referenceSource: '01_FACE_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
     });
   } else {
-    const override = modelAuditNotes['crit_facial_structure'];
+    const evaluated = validateModelCriterionNote(
+      'crit_facial_structure',
+      modelAuditNotes['crit_facial_structure'],
+      sceneConfig,
+      auditStatus
+    );
     criteria.push({
       id: 'crit_facial_structure',
       label: 'Estructura Facial e Identidad de Diego',
       domain: '01_FACE_MASTER',
-      verdict: override?.verdict || 'PASS',
-      observations:
-        override?.observations ||
-        'La estructura ósea facial exhibe los ángulos mandibulares y pómulos característicos de Diego Navarro, sin rasgos genéricos de IA ni contaminación de la fisonomía de la inspiración.',
-      evidence:
-        override?.evidence ||
-        'Comparación anatómica positiva contra 01_FACE_MASTER: proporción interocular y línea mandibular consistentes.',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
       referenceSource: '01_FACE_MASTER',
+      assessmentType: evaluated.assessmentType,
     });
   }
 
@@ -68,39 +219,57 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       observations: 'Imposible verificar barba y cabello sin el Face Master.',
       evidence: 'Falta referencia visual canónica.',
       referenceSource: '01_FACE_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
     });
   } else {
-    const override = modelAuditNotes['crit_hair_beard'];
+    const evaluated = validateModelCriterionNote(
+      'crit_hair_beard',
+      modelAuditNotes['crit_hair_beard'],
+      sceneConfig,
+      auditStatus
+    );
     criteria.push({
       id: 'crit_hair_beard',
       label: 'Nacimiento Capilar, Peinado y Barba',
       domain: '01_FACE_MASTER',
-      verdict: override?.verdict || 'PASS',
-      observations:
-        override?.observations ||
-        'Cabello castaño oscuro con textura ondulada sutil y barba de 3 días densa y recortada de manera orgánica conforme a la norma.',
-      evidence:
-        override?.evidence ||
-        'El vello facial muestra distribución biológica auténtica sin líneas artificiales de máquina barberil.',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
       referenceSource: '01_FACE_MASTER',
+      assessmentType: evaluated.assessmentType,
     });
   }
 
   // 3. Tono y textura cutánea
-  const overrideSkin = modelAuditNotes['crit_skin_texture'];
-  criteria.push({
-    id: 'crit_skin_texture',
-    label: 'Tono y Textura Cutánea (Sin Blanqueamiento ni Piel de Plástico)',
-    domain: '01_FACE_MASTER',
-    verdict: overrideSkin?.verdict || 'PASS',
-    observations:
-      overrideSkin?.observations ||
-      'Tono de piel oliva cálido respetado. Se aprecian micro-poros visibles, ligera textura natural y ausencia de efecto aerógrafo o embellecimiento agresivo.',
-    evidence:
-      overrideSkin?.evidence ||
-      'Gradiente espectral natural bajo luz diurna, sin blanqueamiento ni suavizado plástico artificial.',
-    referenceSource: '01_FACE_MASTER',
-  });
+  if (!faceMasterConnected) {
+    criteria.push({
+      id: 'crit_skin_texture',
+      label: 'Tono y Textura Cutánea (Sin Blanqueamiento ni Piel de Plástico)',
+      domain: '01_FACE_MASTER',
+      verdict: 'UNVERIFIED',
+      observations: 'Sin 01_FACE_MASTER no es posible validar el tono de piel canónico ni textura.',
+      evidence: 'Referencia de tono de piel ausente.',
+      referenceSource: '01_FACE_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
+    });
+  } else {
+    const evaluated = validateModelCriterionNote(
+      'crit_skin_texture',
+      modelAuditNotes['crit_skin_texture'],
+      sceneConfig,
+      auditStatus
+    );
+    criteria.push({
+      id: 'crit_skin_texture',
+      label: 'Tono y Textura Cutánea (Sin Blanqueamiento ni Piel de Plástico)',
+      domain: '01_FACE_MASTER',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
+      referenceSource: '01_FACE_MASTER',
+      assessmentType: evaluated.assessmentType,
+    });
+  }
 
   // 4. Proporciones cabeza-cuerpo
   if (sceneConfig.shotType === 'portrait' || sceneConfig.shotType === 'selfie') {
@@ -110,9 +279,10 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       domain: '02_BODY_MASTER',
       verdict: 'REVIEW',
       observations:
-        'Encuadre cerrado (plano corto/selfie): La relación craneal respecto a clavículas y hombros se visualiza correcta, pero las proporciones corporales completas quedan parcialmente fuera de campo.',
-      evidence: 'Área torácica inferior no evaluable por límite del encuadre fotográfico.',
+        'Encuadre cerrado (plano corto/selfie): La relación craneal completa respecto al torso e inferiores no es evaluable por oclusión de encuadre.',
+      evidence: 'Área corporal inferior no visible por recorte del encuadre fotográfico.',
       referenceSource: '02_BODY_MASTER',
+      assessmentType: 'UNASSESSABLE_OCCLUSION',
     });
   } else if (!bodyMasterConnected) {
     criteria.push({
@@ -123,35 +293,57 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       observations: '02_BODY_MASTER desconectado; no se puede contrastar la proporción canónica 1:7.5.',
       evidence: 'Activo canónico 02 no conectado en el proyecto.',
       referenceSource: '02_BODY_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
     });
   } else {
+    const evaluated = validateModelCriterionNote(
+      'crit_head_body_prop',
+      modelAuditNotes['crit_head_body_prop'],
+      sceneConfig,
+      auditStatus
+    );
     criteria.push({
       id: 'crit_head_body_prop',
       label: 'Proporciones Cabeza-Cuerpo',
       domain: '02_BODY_MASTER',
-      verdict: 'PASS',
-      observations:
-        'Proporción anatómica esbelta coherente con los 1.83 m de Diego. Ancho biacromial proporcionado sin aspecto de fisicoculturista.',
-      evidence: 'Relación de escala cráneo-torso coincide con las láminas de 02_BODY_MASTER.',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
       referenceSource: '02_BODY_MASTER',
+      assessmentType: evaluated.assessmentType,
     });
   }
 
   // 5. Anatomía corporal visible (manos, dedos, postura)
-  const overrideAnatomy = modelAuditNotes['crit_body_anatomy'];
-  criteria.push({
-    id: 'crit_body_anatomy',
-    label: 'Anatomía Corporal Visible y Verosimilitud de Extremidades',
-    domain: '02_BODY_MASTER',
-    verdict: overrideAnatomy?.verdict || 'PASS',
-    observations:
-      overrideAnatomy?.observations ||
-      'Postura corporal verosímil y relajada. Las manos y dedos visibles guardan falanges biológicamente coherentes sin duplicaciones ni distorsiones.',
-    evidence:
-      overrideAnatomy?.evidence ||
-      'Articulaciones de hombros y muñecas ubicadas anatómicamente en posición orgánica natural.',
-    referenceSource: '02_BODY_MASTER',
-  });
+  if (!bodyMasterConnected) {
+    criteria.push({
+      id: 'crit_body_anatomy',
+      label: 'Anatomía Corporal Visible y Verosimilitud de Extremidades',
+      domain: '02_BODY_MASTER',
+      verdict: 'UNVERIFIED',
+      observations: '02_BODY_MASTER desconectado. Imposible auditar anatomía ni extremidades.',
+      evidence: 'Referencia anatómica ausente.',
+      referenceSource: '02_BODY_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
+    });
+  } else {
+    const evaluated = validateModelCriterionNote(
+      'crit_body_anatomy',
+      modelAuditNotes['crit_body_anatomy'],
+      sceneConfig,
+      auditStatus
+    );
+    criteria.push({
+      id: 'crit_body_anatomy',
+      label: 'Anatomía Corporal Visible y Verosimilitud de Extremidades',
+      domain: '02_BODY_MASTER',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
+      referenceSource: '02_BODY_MASTER',
+      assessmentType: evaluated.assessmentType,
+    });
+  }
 
   // 6. Accesorios visibles: Gafas, Reloj, Teléfono
   if (!accessoriesMasterConnected) {
@@ -160,35 +352,31 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       label: 'Fidelidad de Accesorios (Gafas / Reloj / Teléfono)',
       domain: '03_ACCESSORIES_MASTER',
       verdict: 'UNVERIFIED',
-      observations: '03_ACCESSORIES_MASTER desconectado. No es posible validar la montura ni la correa.',
+      observations: '03_ACCESSORIES_MASTER desconectado. No es posible validar la montura ni los accesorios.',
       evidence: 'Activo canónico 03 ausente en la sesión de producción.',
       referenceSource: '03_ACCESSORIES_MASTER (Desconectado)',
-    });
-  } else if (sceneConfig.glasses === 'off') {
-    criteria.push({
-      id: 'crit_accessories',
-      label: 'Fidelidad de Accesorios: Restricción "Sin Gafas"',
-      domain: '03_ACCESSORIES_MASTER',
-      verdict: 'PASS',
-      observations:
-        'Cumplimiento estricto: El sujeto no lleva gafas ni lentes de sol. Rostro despejado de monturas.',
-      evidence: 'Zona periocular libre de accesorios conforme a la directiva de escena.',
-      referenceSource: '03_ACCESSORIES_MASTER',
+      assessmentType: 'MISSING_REFERENCE',
     });
   } else {
-    const overrideAcc = modelAuditNotes['crit_accessories'];
+    const label =
+      sceneConfig.glasses === 'off'
+        ? 'Fidelidad de Accesorios: Restricción "Sin Gafas"'
+        : 'Fidelidad de Accesorios: Gafas Redondas Metálicas y Reloj';
+    const evaluated = validateModelCriterionNote(
+      'crit_accessories',
+      modelAuditNotes['crit_accessories'],
+      sceneConfig,
+      auditStatus
+    );
     criteria.push({
       id: 'crit_accessories',
-      label: 'Fidelidad de Accesorios: Gafas Redondas Metálicas y Reloj Bauhaus',
+      label,
       domain: '03_ACCESSORIES_MASTER',
-      verdict: overrideAcc?.verdict || 'PASS',
-      observations:
-        overrideAcc?.observations ||
-        'Gafas observadas con aro metálico circular plateado fino, sin montura plástica de pasta. En caso de ser visible la muñeca, se detecta caja de reloj plateada con esfera clara.',
-      evidence:
-        overrideAcc?.evidence ||
-        'Geometría de lente circular y puente de titanio fino coincidentes con 03_ACCESSORIES_MASTER.',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
       referenceSource: '03_ACCESSORIES_MASTER',
+      assessmentType: evaluated.assessmentType,
     });
   }
 
@@ -202,49 +390,71 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       observations: '04_EXPRESSIONS_MASTER desconectado. Falta catálogo de referencia de microexpresiones.',
       evidence: 'Activo 04 no conectado.',
       referenceSource: '04_EXPRESSIONS_MASTER (Desconectado)',
+      assessmentType: 'MISSING_REFERENCE',
     });
   } else {
+    const evaluated = validateModelCriterionNote(
+      'crit_expression',
+      modelAuditNotes['crit_expression'],
+      sceneConfig,
+      auditStatus
+    );
     criteria.push({
       id: 'crit_expression',
       label: `Fidelidad de Expresión Solicitada: "${sceneConfig.expression}"`,
       domain: '04_EXPRESSIONS_MASTER',
-      verdict: 'PASS',
-      observations: `La expresión del candidato fotográfico refleja el registro solicitado (${sceneConfig.expression}), manteniendo la organicidad humana y la identidad inmutable de Diego.`,
-      evidence:
-        'Tensión peribucal y periocular concordante con la lámina correspondiente de 04_EXPRESSIONS_MASTER.',
+      verdict: evaluated.verdict,
+      observations: evaluated.observations,
+      evidence: evaluated.evidence,
       referenceSource: '04_EXPRESSIONS_MASTER',
+      assessmentType: evaluated.assessmentType,
     });
   }
 
   // 8. Fidelidad a la escena solicitada
+  const evaluatedScene = validateModelCriterionNote(
+    'crit_scene_faithfulness',
+    modelAuditNotes['crit_scene_faithfulness'],
+    sceneConfig,
+    auditStatus
+  );
   criteria.push({
     id: 'crit_scene_faithfulness',
     label: 'Fidelidad al Escenario y Composición de Escena',
     domain: 'SCENE_DIRECTOR',
-    verdict: 'PASS',
-    observations:
-      'El entorno, iluminación y disposición espacial concuerdan con la descripción solicitada en el Director de Escena.',
-    evidence: 'Elementos arquitectónicos, luz ambiental y plano de cámara coincidentes.',
+    verdict: evaluatedScene.verdict,
+    observations: evaluatedScene.observations,
+    evidence: evaluatedScene.evidence,
     referenceSource: 'Scene Director Config',
+    assessmentType: evaluatedScene.assessmentType,
   });
 
   // 9. Verosimilitud fotográfica (Anti-IA plastic check)
+  const evaluatedRealism = validateModelCriterionNote(
+    'crit_photo_realism',
+    modelAuditNotes['crit_photo_realism'],
+    sceneConfig,
+    auditStatus
+  );
   criteria.push({
     id: 'crit_photo_realism',
     label: 'Verosimilitud Fotográfica Casual (Anti-AI Glaze)',
     domain: 'REALISM_STANDARD',
-    verdict: 'PASS',
-    observations:
-      'Aspecto fotográfico convincente: ausencia de brillo aceitoso sintético, rango dinámico creíble y óptica realista sin aberraciones surrealistas.',
-    evidence: 'Grano sutil, profundidad de campo natural de objetivo f/1.8 y textura de tejidos visible.',
+    verdict: evaluatedRealism.verdict,
+    observations: evaluatedRealism.observations,
+    evidence: evaluatedRealism.evidence,
     referenceSource: 'Smartphone Realism Standard',
+    assessmentType: evaluatedRealism.assessmentType,
   });
 
   // Calculate Overall Verdict
-  let overallVerdict: AuditVerdict = 'PASS';
-  const hasUnverified = criteria.some((c) => c.verdict === 'UNVERIFIED');
+  // Rule: An overall PASS is impossible when any required identity check remains UNVERIFIED
   const hasFail = criteria.some((c) => c.verdict === 'FAIL');
+  const hasUnverified = criteria.some((c) => c.verdict === 'UNVERIFIED');
   const hasReview = criteria.some((c) => c.verdict === 'REVIEW');
+  const allPass = criteria.length === 9 && criteria.every((c) => c.verdict === 'PASS');
+
+  let overallVerdict: AuditVerdict = 'UNVERIFIED';
 
   if (hasFail) {
     overallVerdict = 'FAIL';
@@ -253,33 +463,37 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
       'Revisar si la imagen de inspiración ha contaminado la estructura ósea de Diego Navarro.'
     );
   } else if (!faceMasterConnected || hasUnverified) {
+    // PASS is strictly IMPOSSIBLE when any required check is UNVERIFIED
     overallVerdict = 'UNVERIFIED';
     suggestedCorrections.push(
-      'Conectar todos los activos en la Bóveda Canónica para permitir la auditoría de continuidad de 9 puntos.',
-      '01_FACE_MASTER y 02_BODY_MASTER deben estar activos para emitir un PASS vinculante.'
+      'Auditoría incompleta: Se requiere verificación visual multimodal con evidencia contrastada.',
+      'Ningún criterio sin evidencia visual real recibe aprobación automática.',
+      'Inspeccionar manualmente el candidato frente a 01_FACE_MASTER antes de considerarlo apto para producción.'
     );
   } else if (hasReview) {
     overallVerdict = 'REVIEW';
     suggestedCorrections.push(
-      'Inspección humana recomendada sobre áreas parcialmente ocluidas o detalles de accesorios menores.',
-      'Si se requiere certeza anatómica completa, cambiar de encuadre hacia plano medio o cuerpo entero.'
+      'Inspección humana recomendada sobre áreas parcialmente ocluidas o detalles de encuadre.',
+      'Si se requiere certeza anatómica completa de proporciones, cambiar de encuadre hacia plano medio o cuerpo entero.'
     );
-  } else {
+  } else if (allPass) {
     overallVerdict = 'PASS';
     suggestedCorrections.push(
       'Candidato conforme a las normas de continuidad visual de Diego Navarro Alpha v0.2.',
-      'Listo para descarga o uso en la producción del proyecto (como candidato, sin alterar el canon).'
+      'Aprobado como candidato verificado (conservar como candidato, sin alterar el canon original).'
     );
+  } else {
+    overallVerdict = 'UNVERIFIED';
   }
 
   const summaryEs =
     overallVerdict === 'PASS'
-      ? 'APROBADO (PASS): No se detectaron discrepancias visibles significativas entre el candidato y los activos canónicos de Diego Navarro. Fisonomía, proporciones y estilo fotográfico validados.'
+      ? 'APROBADO (PASS): Todos los criterios de continuidad visual fueron explícitamente contrastados y verificados con evidencia visual frente a las referencias canónicas de Diego Navarro.'
       : overallVerdict === 'REVIEW'
-      ? 'REVISIÓN (REVIEW): Se detectaron aspectos menores o áreas parcialmente fuera de encuadre que requieren inspección por parte del operador humano.'
+      ? 'REVISIÓN (REVIEW): Se detectaron aspectos menores o áreas fuera de campo (por ejemplo encuadre cerrado) que requieren inspección por parte del operador humano.'
       : overallVerdict === 'UNVERIFIED'
-      ? 'NO VERIFICADO (UNVERIFIED): Uno o más activos canónicos esenciales están desconectados en la Bóveda Canónica. La auditoría formal no puede garantizar la identidad.'
-      : 'FALLO (FAIL): Se detectó un conflicto crítico de identidad, anatomía o accesorios en la imagen candidata.';
+      ? 'NO VERIFICADO (UNVERIFIED): Auditoría incompleta. Uno o más criterios carecen de evidencia visual validada o tienen referencias desconectadas. Ningún criterio sin evidencia real obtiene aprobación automática.'
+      : 'FALLO (FAIL): Se detectó una discrepancia crítica de identidad, anatomía o accesorios en la imagen candidata.';
 
   return {
     overallVerdict,
@@ -289,5 +503,6 @@ export function runContinuityAudit(params: AuditInputParams): ContinuityAuditRep
     suggestedCorrections,
     unassessableNotice:
       'Aviso de auditoría: Las partes corporales o accesorios no visibles en el encuadre se registran como no evaluables en lugar de otorgarles un pase automático.',
+    auditExecutionStatus: auditStatus,
   };
 }

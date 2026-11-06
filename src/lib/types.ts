@@ -110,6 +110,13 @@ export interface ProductionPromptData {
 
 export type AuditVerdict = 'PASS' | 'REVIEW' | 'FAIL' | 'UNVERIFIED';
 
+export type AssessmentType =
+  | 'VERIFIED_COMPARISON'
+  | 'UNASSESSABLE_OCCLUSION'
+  | 'MISSING_REFERENCE'
+  | 'TECHNICAL_FAILURE'
+  | 'UNVERIFIED_NO_EVIDENCE';
+
 export interface AuditCriterion {
   id: string;
   label: string;
@@ -118,6 +125,7 @@ export interface AuditCriterion {
   observations: string;
   evidence: string;
   referenceSource: string;
+  assessmentType?: AssessmentType;
 }
 
 export interface ContinuityAuditReport {
@@ -127,6 +135,7 @@ export interface ContinuityAuditReport {
   criteria: AuditCriterion[];
   suggestedCorrections: string[];
   unassessableNotice?: string;
+  auditExecutionStatus?: 'SUCCESS' | 'FAILED' | 'UNSUPPORTED_FORMAT' | 'EMPTY' | 'MALFORMED' | 'NOT_RUN';
 }
 
 export interface ProductionResult {
@@ -142,4 +151,5 @@ export interface ProductionResult {
   continuityAudit?: ContinuityAuditReport;
   generationDurationMs?: number;
   modelUsed?: string;
+  quotaNotice?: string;
 }

@@ -18,6 +18,7 @@ import {
   ChevronUp,
   AlertOctagon,
   Camera,
+  AlertCircle,
 } from 'lucide-react';
 
 interface ProductionReviewViewProps {
@@ -64,6 +65,7 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
     identityGuardReport,
     executionMode,
     modelUsed,
+    quotaNotice,
   } = productionResult;
 
   const handleCopyPrompt = () => {
@@ -172,6 +174,16 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
                 NO AGREGAR AL CANON
               </span>
             </div>
+
+            {quotaNotice && (
+              <div className="mx-4 p-3 rounded-lg bg-sky-950/40 border border-sky-800/60 text-sky-200 text-xs flex items-start gap-2.5">
+                <AlertCircle className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="font-semibold text-sky-300">Modo de Anclaje Canónico Oficial Activo</p>
+                  <p className="text-[11px] text-slate-300 leading-relaxed">{quotaNotice}</p>
+                </div>
+              </div>
+            )}
 
             <div className="px-4 pb-4">
               {generatedImageUrl ? (
@@ -304,8 +316,23 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
                       className="p-3 rounded-lg bg-slate-900/50 border border-slate-800 text-xs space-y-1.5"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-semibold text-slate-200">{crit.label}</span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono border ${critBadge}`}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-200">{crit.label}</span>
+                          {crit.assessmentType && (
+                            <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                              {crit.assessmentType === 'VERIFIED_COMPARISON'
+                                ? 'Comparación Verificada'
+                                : crit.assessmentType === 'UNASSESSABLE_OCCLUSION'
+                                ? 'Oclusión / Encuadre'
+                                : crit.assessmentType === 'MISSING_REFERENCE'
+                                ? 'Canon Desconectado'
+                                : crit.assessmentType === 'TECHNICAL_FAILURE'
+                                ? 'Fallo Técnico'
+                                : 'Sin Evidencia Visual'}
+                            </span>
+                          )}
+                        </div>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono border ${critBadge} shrink-0`}>
                           {crit.verdict}
                         </span>
                       </div>

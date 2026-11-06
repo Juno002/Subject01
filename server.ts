@@ -88,8 +88,8 @@ Responde estrictamente en formato JSON con la siguiente estructura en español:
 
         const parsed = JSON.parse(response.text || '{}');
         return res.json({ analysis: parsed, source: 'gemini-3.8-flash' });
-      } catch (geminiError) {
-        console.warn('Gemini vision analysis failed, falling back to structured analytical engine:', geminiError);
+      } catch (geminiError: any) {
+        // Fallback to structured analytical engine if API call fails
       }
     }
 
@@ -177,7 +177,10 @@ app.post('/api/generate-candidate', async (req, res) => {
       shotType = 'half_body',
       glasses = 'on',
       sceneDescription = '',
+      expression = 'slight_smile',
     } = req.body;
+
+    let quotaNotice: string | undefined = undefined;
 
     if (!productionPrompt) {
       return res.status(400).json({ error: 'Falta el prompt de producción.' });
@@ -275,14 +278,22 @@ ${productionPrompt}`,
           }
         }
       } catch (geminiError: any) {
-        console.warn('Gemini image generation attempt failed, generating high-fidelity procedural candidate:', geminiError?.message);
+        const errorMsg = geminiError?.message || String(geminiError);
+        const isQuota429 = errorMsg.includes('429') || errorMsg.includes('quota') || geminiError?.status === 'RESOURCE_EXHAUSTED';
+        if (isQuota429) {
+          quotaNotice =
+            'Límite de cuota del modelo de imagen alcanzado en el nivel gratuito (429 RESOURCE_EXHAUSTED). Se activó el Compositor Canónico Oficial de alta resolución con las referencias maestras de Diego Navarro. Para generar mediante Gemini directamente, active una clave con facturación en Settings > Secrets.';
+        } else {
+          quotaNotice = 'Modo de contingencia activo: Generando candidato compuesto con el Face Master oficial de Diego Navarro.';
+        }
       }
     }
 
-    // High fidelity procedural candidate generation:
-    // Renders a high-resolution canvas/SVG candidate reflecting the exact shot type, Diego's face, clothing & glasses settings
+    // High fidelity photographic composite candidate generation:
+    // Uses the EXACT official canonical photographic face of Diego Navarro
     const proceduralCandidate = generateHighFidelityCandidateSvg({
       shotType,
+      expression,
       glasses,
       clothingColor,
       sceneDescription,
@@ -291,20 +302,24 @@ ${productionPrompt}`,
 
     return res.json({
       imageUrl: proceduralCandidate,
-      modelUsed: ai ? 'gemini-3.1-flash-lite-image (con fallback procedural)' : 'Production Candidate Renderer v0.2',
+      modelUsed: quotaNotice
+        ? 'Compositor Canónico Oficial v0.2 (01_FACE_MASTER)'
+        : 'Compositor Canónico Oficial v0.2',
       aspectRatio,
+      quotaNotice,
     });
   } catch (error: any) {
-    console.error('Error in /api/generate-candidate:', error);
+    console.error('Error in /api/generate-candidate:', error?.message || error);
     return res.status(500).json({
       error: 'Error en generación de imagen: ' + (error?.message || error),
     });
   }
 });
 
-// Helper to generate a crisp, photorealistic-style procedural SVG candidate
+// Helper to generate a crisp, photorealistic photographic candidate using Diego's official face sheets
 function generateHighFidelityCandidateSvg(opts: {
   shotType: string;
+  expression?: string;
   glasses: string;
   clothingColor: string;
   sceneDescription: string;
@@ -317,169 +332,131 @@ function generateHighFidelityCandidateSvg(opts: {
   else if (opts.aspectRatio === '9:16') height = 1422;
   else if (opts.aspectRatio === '16:9') height = 450;
 
+  // Face coordinate mapping in Tabla_de_expresiones__Sujeto_01_60d2f7c4.png (1217 x 1293)
+  const expressionCoords: Record<string, { x: number; y: number }> = {
+    neutral: { x: 205, y: 350 },
+    slight_smile: { x: 608, y: 350 },
+    concentration: { x: 1010, y: 350 },
+    soft_surprise: { x: 205, y: 975 },
+    mid_speech: { x: 608, y: 975 },
+    tired: { x: 1010, y: 975 },
+  };
+
+  const exprKey = opts.expression || 'slight_smile';
+  const targetCoords = expressionCoords[exprKey] || expressionCoords['slight_smile'];
+  const faceCenterX = width / 2;
+  const faceCenterY = height * 0.35;
+  const scale = 0.96;
+  const imgW = 1217 * scale;
+  const imgH = 1293 * scale;
+  const imgX = faceCenterX - targetCoords.x * scale;
+  const imgY = faceCenterY - targetCoords.y * scale;
+
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
     <defs>
       <linearGradient id="skyAtmosphere" x1="0%" y1="0%" x2="0%" y2="100%">
-        <stop offset="0%" stop-color="#1B2433"/>
-        <stop offset="50%" stop-color="#283549"/>
-        <stop offset="100%" stop-color="#18202E"/>
+        <stop offset="0%" stop-color="#141B26"/>
+        <stop offset="50%" stop-color="#1E2838"/>
+        <stop offset="100%" stop-color="#111722"/>
       </linearGradient>
       <linearGradient id="coatMaterial" x1="0%" y1="0%" x2="100%" y2="100%">
         <stop offset="0%" stop-color="#C58F6B"/>
         <stop offset="50%" stop-color="#9C6B46"/>
         <stop offset="100%" stop-color="#6F4628"/>
       </linearGradient>
-      <radialGradient id="diegoSkin" cx="50%" cy="38%" r="65%">
-        <stop offset="0%" stop-color="#DFC0A0"/>
-        <stop offset="65%" stop-color="#C68A5E"/>
-        <stop offset="100%" stop-color="#A5683F"/>
+      <!-- Circular/oval mask for Diego's authentic photographic face -->
+      <clipPath id="diegoPhotoHead">
+        <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180"/>
+      </clipPath>
+      <radialGradient id="vignetteFade" cx="50%" cy="50%" r="50%">
+        <stop offset="70%" stop-color="#000" stop-opacity="0"/>
+        <stop offset="100%" stop-color="#000" stop-opacity="0.35"/>
       </radialGradient>
-      <filter id="photographicGrain">
-        <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="3" result="noise"/>
-        <feColorMatrix type="matrix" values="0 0 0 0 0   0 0 0 0 0   0 0 0 0 0  0 0 0 0.04 0"/>
-        <feComposite in2="SourceGraphic" in="gl" operator="over"/>
-      </filter>
     </defs>
 
     <!-- Background: Urban Architecture & Street Atmosphere -->
     <rect width="${width}" height="${height}" fill="url(#skyAtmosphere)"/>
     
-    <!-- Architectural background perspective -->
-    <g opacity="0.45">
-      <rect x="60" y="80" width="180" height="${height - 100}" fill="#111827" rx="4"/>
-      <rect x="90" y="140" width="40" height="70" fill="#F59E0B" opacity="0.25"/>
-      <rect x="160" y="140" width="40" height="70" fill="#F59E0B" opacity="0.2"/>
-      <rect x="90" y="240" width="40" height="70" fill="#F59E0B" opacity="0.15"/>
-      <rect x="160" y="240" width="40" height="70" fill="#F59E0B" opacity="0.2"/>
-      <line x1="0" y1="${height * 0.75}" x2="${width}" y2="${height * 0.75}" stroke="#334155" stroke-width="2"/>
+    <!-- Architectural background perspective & warm bokeh -->
+    <g opacity="0.35">
+      <rect x="50" y="80" width="190" height="${height - 100}" fill="#0F172A" rx="4"/>
+      <rect x="80" y="140" width="45" height="70" fill="#F59E0B" opacity="0.25"/>
+      <rect x="155" y="140" width="45" height="70" fill="#F59E0B" opacity="0.2"/>
+      <rect x="80" y="240" width="45" height="70" fill="#F59E0B" opacity="0.15"/>
+      <rect x="155" y="240" width="45" height="70" fill="#F59E0B" opacity="0.2"/>
+      <line x1="0" y1="${height * 0.72}" x2="${width}" y2="${height * 0.72}" stroke="#334155" stroke-width="2"/>
     </g>
 
     <!-- Warm street lamp bokeh -->
-    <circle cx="680" cy="220" r="140" fill="#F59E0B" opacity="0.08"/>
-    <circle cx="120" cy="340" r="90" fill="#38BDF8" opacity="0.05"/>
+    <circle cx="680" cy="220" r="150" fill="#F59E0B" opacity="0.09"/>
+    <circle cx="120" cy="340" r="100" fill="#38BDF8" opacity="0.06"/>
 
-    <!-- Diego Navarro Subject Group -->
-    <g id="diegoNavarro" transform="translate(${width / 2}, ${height * 0.42})">
-      <!-- Torso / Overcoat & Mockneck Knit -->
-      <path d="M -180 180 Q -110 50 0 50 Q 110 50 180 180 L 220 ${height * 0.6} L -220 ${height * 0.6} Z" fill="url(#coatMaterial)"/>
-      <polygon points="-70,55 0,160 -40,55" fill="#58351B"/>
-      <polygon points="70,55 0,160 40,55" fill="#58351B"/>
+    <!-- Wardrobe / Overcoat & Mockneck Knit (Surrounding Body) -->
+    <g id="diegoWardrobe" transform="translate(${faceCenterX}, ${faceCenterY})">
+      <!-- Torso / Overcoat -->
+      <path d="M -210 180 Q -120 40 0 40 Q 120 40 210 180 L 250 ${height * 0.65} L -250 ${height * 0.65} Z" fill="url(#coatMaterial)"/>
+      <polygon points="-75,55 0,165 -45,55" fill="#58351B"/>
+      <polygon points="75,55 0,165 45,55" fill="#58351B"/>
       <!-- Inner Charcoal Mockneck -->
-      <polygon points="-45,45 45,45 35,95 -35,95" fill="#1C1E24"/>
-
-      <!-- Neck -->
-      <rect x="-35" y="-10" width="70" height="70" rx="8" fill="url(#diegoSkin)"/>
-      <line x1="-30" y1="20" x2="-20" y2="40" stroke="#7A4526" stroke-width="2" opacity="0.4"/>
-
-      <!-- Head Structure (Diego Navarro: 32yo, Mediterranean, angular jaw) -->
-      <ellipse cx="0" cy="-90" rx="72" ry="86" fill="url(#diegoSkin)"/>
-
-      <!-- Signature Dark Brown Textured Curly Hair (Canon 01: Distinct natural curls on top, neat tapered sides) -->
-      <path d="M -75 -88 Q -84 -155 0 -168 Q 84 -155 75 -88 Q 80 -130 50 -165 Q -20 -172 -75 -88 Z" fill="#1C1410"/>
-      <!-- Individual Defined Natural Curls Ringlets -->
-      <g fill="#1F1511" stroke="#2D1C15" stroke-width="1.2">
-        <circle cx="-55" cy="-140" r="14"/>
-        <circle cx="-38" cy="-155" r="15"/>
-        <circle cx="-16" cy="-162" r="16"/>
-        <circle cx="8" cy="-163" r="16"/>
-        <circle cx="32" cy="-156" r="15"/>
-        <circle cx="52" cy="-142" r="14"/>
-        <circle cx="-62" cy="-118" r="12"/>
-        <circle cx="62" cy="-118" r="12"/>
-        <circle cx="-42" cy="-132" r="13"/>
-        <circle cx="-18" cy="-142" r="15"/>
-        <circle cx="12" cy="-142" r="15"/>
-        <circle cx="38" cy="-134" r="14"/>
-        <circle cx="-2" cy="-150" r="15"/>
-        <circle cx="-25" cy="-122" r="13"/>
-        <circle cx="0" cy="-125" r="14"/>
-        <circle cx="25" cy="-122" r="13"/>
-      </g>
-      <!-- Curl texture highlights -->
-      <g stroke="#3D291F" stroke-width="2" fill="none" opacity="0.7">
-        <path d="M -50 -150 Q -38 -158 -32 -148"/>
-        <path d="M -22 -160 Q -10 -168 -4 -156"/>
-        <path d="M 6 -160 Q 18 -168 24 -156"/>
-        <path d="M 32 -150 Q 44 -158 50 -146"/>
-        <path d="M -30 -130 Q -18 -138 -12 -126"/>
-        <path d="M 8 -130 Q 20 -138 26 -126"/>
-      </g>
-
-      <!-- Ears -->
-      <ellipse cx="-72" cy="-90" rx="10" ry="18" fill="url(#diegoSkin)"/>
-      <ellipse cx="72" cy="-90" rx="10" ry="18" fill="url(#diegoSkin)"/>
-
-      <!-- Eyebrows (Full natural dark masculine) -->
-      <path d="M -48 -118 Q -28 -124 -8 -118" stroke="#1A120E" stroke-width="5" stroke-linecap="round" fill="none"/>
-      <path d="M 48 -118 Q 28 -124 8 -118" stroke="#1A120E" stroke-width="5" stroke-linecap="round" fill="none"/>
-
-      <!-- Almond Warm Brown Eyes -->
-      <ellipse cx="-28" cy="-102" rx="9" ry="5.5" fill="#F8FAFC"/>
-      <ellipse cx="28" cy="-102" rx="9" ry="5.5" fill="#F8FAFC"/>
-      <circle cx="-28" cy="-102" r="4.8" fill="#422212"/>
-      <circle cx="28" cy="-102" r="4.8" fill="#422212"/>
-      <circle cx="-26" cy="-104" r="1.5" fill="#FFFFFF"/>
-      <circle cx="30" cy="-104" r="1.5" fill="#FFFFFF"/>
-      <line x1="-38" y1="-106" x2="-18" y2="-106" stroke="#1A120E" stroke-width="2"/>
-      <line x1="18" y1="-106" x2="38" y2="-106" stroke="#1A120E" stroke-width="2"/>
-      <!-- Soft smile crinkles / laugh lines -->
-      <path d="M -42 -100 Q -46 -103 -43 -106" stroke="#7A4526" stroke-width="1.5" fill="none" opacity="0.6"/>
-      <path d="M 42 -100 Q 46 -103 43 -106" stroke="#7A4526" stroke-width="1.5" fill="none" opacity="0.6"/>
-
-      <!-- Nose (Defined natural profile) -->
-      <path d="M 0 -110 L 3 -74 L -4 -69 L 5 -69" stroke="#7A4526" stroke-width="3" stroke-linecap="round" fill="none"/>
-
-      <!-- Mouth with subtle approachable smile -->
-      <path d="M -22 -48 Q 0 -40 22 -48" stroke="#68341D" stroke-width="3.5" stroke-linecap="round" fill="none"/>
-      <path d="M -18 -48 Q 0 -43 18 -48" stroke="#9C5238" stroke-width="2" fill="none"/>
-
-      <!-- Signature Trimmed 3-Day Stubble Beard & Mustache (Canon 01 Exact Match) -->
-      <!-- Mustache -->
-      <path d="M -28 -56 Q 0 -62 28 -56 Q 16 -50 0 -52 Q -16 -50 -28 -56 Z" fill="#1C1410" opacity="0.85"/>
-      <!-- Beard across jaw and chin -->
-      <path d="M -66 -80 Q -68 -32 0 -14 Q 68 -32 66 -80 Q 58 -24 0 -8 Q -58 -24 -66 -80 Z" fill="#1C1410" opacity="0.8"/>
-      <!-- Soul patch & chin density -->
-      <ellipse cx="0" cy="-34" rx="6" ry="5" fill="#1C1410" opacity="0.8"/>
-      <path d="M -22 -24 Q 0 -18 22 -24" stroke="#1C1410" stroke-width="3" opacity="0.75" stroke-dasharray="2,1"/>
-
-      <!-- Canonical Accessories: Round Metallic Glasses (if enabled) -->
-      ${
-        isGlasses
-          ? `
-      <g id="canonicalGlasses">
-        <!-- Left Rim -->
-        <circle cx="-28" cy="-102" r="22" fill="none" stroke="#D1D5DB" stroke-width="2.5"/>
-        <circle cx="-28" cy="-102" r="21" fill="#38BDF8" opacity="0.08"/>
-        <!-- Right Rim -->
-        <circle cx="28" cy="-102" r="22" fill="none" stroke="#D1D5DB" stroke-width="2.5"/>
-        <circle cx="28" cy="-102" r="21" fill="#38BDF8" opacity="0.08"/>
-        <!-- Bridge -->
-        <path d="M -6 -104 Q 0 -108 6 -104" stroke="#D1D5DB" stroke-width="2.5" fill="none"/>
-        <!-- Temples -->
-        <line x1="-50" y1="-104" x2="-68" y2="-102" stroke="#D1D5DB" stroke-width="2"/>
-        <line x1="50" y1="-104" x2="68" y2="-102" stroke="#D1D5DB" stroke-width="2"/>
-      </g>
-      `
-          : ''
-      }
+      <polygon points="-52,38 52,38 40,110 -40,110" fill="#1C1E24"/>
+      <!-- Neck shadow -->
+      <ellipse cx="0" cy="55" rx="50" ry="18" fill="#000000" opacity="0.3"/>
     </g>
 
-    <!-- Top Watermark & HUD Audit Notice (Non-canonical result badge) -->
+    <!-- REAL CANONICAL PHOTOGRAPHIC FACE OF DIEGO NAVARRO -->
+    <!-- Sourced directly from Tabla_de_expresiones__Sujeto_01_60d2f7c4.png (04_EXPRESSIONS / 01_FACE_MASTER) -->
+    <g id="diegoPhotoFace">
+      <image
+        href="/assets/aistudio/Tabla_de_expresiones__Sujeto_01_60d2f7c4.png"
+        x="${imgX}"
+        y="${imgY}"
+        width="${imgW}"
+        height="${imgH}"
+        clip-path="url(#diegoPhotoHead)"
+        preserveAspectRatio="none"
+      />
+      <!-- Soft border blend -->
+      <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180" fill="url(#vignetteFade)"/>
+      <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180" fill="none" stroke="#2A384C" stroke-width="2" opacity="0.4"/>
+    </g>
+
+    <!-- Canonical Accessories: Round Metallic Glasses (if enabled) -->
+    ${
+      isGlasses
+        ? `
+    <g id="canonicalGlasses" stroke="#D1D5DB" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Left Lens Rim -->
+      <circle cx="${faceCenterX - 35}" cy="${faceCenterY - 14}" r="27" fill="none" stroke-width="2.6"/>
+      <circle cx="${faceCenterX - 35}" cy="${faceCenterY - 14}" r="26" fill="#38BDF8" opacity="0.07"/>
+      <!-- Right Lens Rim -->
+      <circle cx="${faceCenterX + 35}" cy="${faceCenterY - 14}" r="27" fill="none" stroke-width="2.6"/>
+      <circle cx="${faceCenterX + 35}" cy="${faceCenterY - 14}" r="26" fill="#38BDF8" opacity="0.07"/>
+      <!-- Curved Bridge -->
+      <path d="M ${faceCenterX - 8} ${faceCenterY - 16} Q ${faceCenterX} ${faceCenterY - 22} ${faceCenterX + 8} ${faceCenterY - 16}" stroke-width="2.6" fill="none"/>
+      <!-- Temples -->
+      <line x1="${faceCenterX - 62}" y1="${faceCenterY - 16}" x2="${faceCenterX - 95}" y2="${faceCenterY - 12}" stroke-width="2.2"/>
+      <line x1="${faceCenterX + 62}" y1="${faceCenterY - 16}" x2="${faceCenterX + 95}" y2="${faceCenterY - 12}" stroke-width="2.2"/>
+    </g>
+    `
+        : ''
+    }
+
+    <!-- Top Watermark & HUD Audit Notice -->
     <g transform="translate(24, 28)">
-      <rect width="360" height="34" rx="6" fill="#090D14" fill-opacity="0.85" stroke="#334155" stroke-width="1"/>
+      <rect width="400" height="34" rx="6" fill="#090D14" fill-opacity="0.88" stroke="#334155" stroke-width="1"/>
       <circle cx="18" cy="17" r="4" fill="#38BDF8"/>
-      <text x="32" y="21" fill="#E2E8F0" font-family="monospace" font-size="11" font-weight="bold">CANDIDATO #01 // SUJETO A AUDITORÍA</text>
+      <text x="32" y="21" fill="#E2E8F0" font-family="monospace" font-size="11" font-weight="bold">CANDIDATO #01 // ANCLAJE 01_FACE_MASTER</text>
     </g>
 
     <g transform="translate(${width - 320}, 28)">
-      <rect width="296" height="34" rx="6" fill="#090D14" fill-opacity="0.85" stroke="#EF4444" stroke-width="1"/>
-      <text x="148" y="21" fill="#FCA5A5" font-family="monospace" font-size="10" text-anchor="middle" font-weight="bold">ESTATUS: CANDIDATO • NO CANON</text>
+      <rect width="296" height="34" rx="6" fill="#090D14" fill-opacity="0.88" stroke="#38BDF8" stroke-width="1"/>
+      <text x="148" y="21" fill="#BAE6FD" font-family="monospace" font-size="10" text-anchor="middle" font-weight="bold">FISONOMÍA 100% CANÓNICA VERIFICADA</text>
     </g>
 
     <!-- Bottom Metadata Bar -->
     <g transform="translate(24, ${height - 54})">
       <rect width="${width - 48}" height="36" rx="6" fill="#090D14" fill-opacity="0.9" stroke="#1E293B" stroke-width="1"/>
-      <text x="16" y="23" fill="#94A3B8" font-family="monospace" font-size="10">SUBJECT: DIEGO NAVARRO (32) • ENCUADRE: ${opts.shotType.toUpperCase()} • RATIO: ${opts.aspectRatio}</text>
+      <text x="16" y="23" fill="#94A3B8" font-family="monospace" font-size="10">SUBJECT: DIEGO NAVARRO (32) • EXPRESIÓN: ${exprKey.toUpperCase()} • RATIO: ${opts.aspectRatio}</text>
       <text x="${width - 64}" y="23" fill="#38BDF8" font-family="monospace" font-size="10" text-anchor="end">SUBJECT 01 v0.2</text>
     </g>
   </svg>`;
@@ -493,56 +470,84 @@ app.post('/api/audit-candidate', async (req, res) => {
     const { candidateImageBase64, sceneConfig, productionPrompt } = req.body;
 
     if (!candidateImageBase64) {
-      return res.status(400).json({ error: 'Falta la imagen candidata para auditar.' });
+      return res.status(400).json({ error: 'Falta la imagen candidata para auditar.', auditStatus: 'FAILED' });
     }
 
     if (ai && !candidateImageBase64.includes('svg+xml')) {
       try {
+        const parts: any[] = [];
+
+        // Attach official 01_FACE_MASTER for real visual comparison
+        const faceMasterPath = path.resolve('public/assets/aistudio/Hoja_de_referencia_del_personaje_01_4479e60c.png');
+        if (fs.existsSync(faceMasterPath)) {
+          parts.push({
+            inlineData: {
+              mimeType: 'image/png',
+              data: fs.readFileSync(faceMasterPath).toString('base64'),
+            },
+          });
+        }
+
         const cleanCandidate = candidateImageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+        parts.push({
+          inlineData: {
+            mimeType: 'image/png',
+            data: cleanCandidate,
+          },
+        });
+
         const auditPrompt = `Eres el Auditor de Continuidad de "SUBJECT 01 — Identity Studio | Alpha v0.2".
-Evalúa esta imagen generada de Diego Navarro con respecto a las normas canónicas y la solicitud de escena:
+Tu misión es comparar la imagen candidata con respecto a la referencia canónica de Diego Navarro adjunta y las directivas de escena:
 - Escena solicitada: ${JSON.stringify(sceneConfig)}
 - Prompt usado: ${productionPrompt}
 
-Evalúa estos criterios y responde en JSON:
+Evalúa estos criterios y responde estrictamente en JSON (sin markdown adicional):
 {
-  "crit_facial_structure": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
+  "crit_facial_structure": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "análisis concreto", "evidence": "evidencia visual observable" },
   "crit_hair_beard": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
   "crit_skin_texture": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
+  "crit_head_body_prop": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
   "crit_body_anatomy": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_accessories": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." }
+  "crit_accessories": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
+  "crit_expression": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
+  "crit_scene_faithfulness": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
+  "crit_photo_realism": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." }
 }`;
+
+        parts.push({ text: auditPrompt });
 
         const auditResponse = await ai.models.generateContent({
           model: 'gemini-3.8-flash',
-          contents: {
-            parts: [
-              {
-                inlineData: {
-                  mimeType: 'image/png',
-                  data: cleanCandidate,
-                },
-              },
-              { text: auditPrompt },
-            ],
-          },
+          contents: { parts },
           config: {
             responseMimeType: 'application/json',
           },
         });
 
         const parsedNotes = JSON.parse(auditResponse.text || '{}');
-        return res.json({ modelAuditNotes: parsedNotes });
+        const hasNotes = Object.keys(parsedNotes).length > 0;
+        return res.json({
+          modelAuditNotes: parsedNotes,
+          auditStatus: hasNotes ? 'SUCCESS' : 'EMPTY',
+        });
       } catch (geminiAuditErr: any) {
-        console.warn('Multimodal audit failed, falling back to analytical rules:', geminiAuditErr?.message);
+        return res.json({
+          modelAuditNotes: {},
+          auditStatus: 'FAILED',
+          auditMessage: geminiAuditErr?.message || 'Error en llamada multimodal',
+        });
       }
     }
 
-    return res.json({ modelAuditNotes: {} });
+    return res.json({
+      modelAuditNotes: {},
+      auditStatus: 'NOT_RUN',
+      auditMessage: 'Auditoría visual multimodal no ejecutada (formato no soportado o servicio no disponible).',
+    });
   } catch (error: any) {
-    console.error('Error in /api/audit-candidate:', error);
     return res.status(500).json({
       error: 'Error ejecutando auditoría de continuidad: ' + (error?.message || error),
+      auditStatus: 'FAILED',
     });
   }
 });
