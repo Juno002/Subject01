@@ -467,28 +467,104 @@ function generateHighFidelityCandidateSvg(opts: {
 // 3. Continuity Auditor Endpoint
 app.post('/api/audit-candidate', async (req, res) => {
   try {
-    const { candidateImageBase64, sceneConfig, productionPrompt } = req.body;
+    const {
+      candidateImageBase64,
+      sceneConfig = {},
+      productionPrompt = '',
+      connectedAssets = {},
+    } = req.body;
 
     if (!candidateImageBase64) {
-      return res.status(400).json({ error: 'Falta la imagen candidata para auditar.', auditStatus: 'FAILED' });
+      return res.status(400).json({
+        error: 'Falta la imagen candidata para auditar.',
+        auditStatus: 'FAILED',
+        executionMetadata: {
+          executionStatus: 'FAILED',
+          candidateImageAttached: false,
+          attachedReferences: [],
+          evaluatedCriteria: [],
+          validStructuredDataReturned: false,
+          errorCategory: 'MISSING_CANDIDATE_IMAGE',
+          errorMessage: 'No se suministró imagen candidata en la petición.',
+          timestamp: new Date().toISOString(),
+        },
+      });
     }
 
     if (ai && !candidateImageBase64.includes('svg+xml')) {
+      const attachedReferences: string[] = [];
       try {
         const parts: any[] = [];
 
-        // Attach official 01_FACE_MASTER for real visual comparison
+        // 1. Attach 01_FACE_MASTER if connected
+        const faceConnected = connectedAssets['01_FACE_MASTER'] !== false;
         const faceMasterPath = path.resolve('public/assets/aistudio/Hoja_de_referencia_del_personaje_01_4479e60c.png');
-        if (fs.existsSync(faceMasterPath)) {
+        if (faceConnected && fs.existsSync(faceMasterPath)) {
+          parts.push({
+            text: 'CANONICAL REFERENCE 01 [01_FACE_MASTER]: Character reference sheet for Diego Navarro (4 angles, facial structure, hair curls, trimmed 3-day beard, warm olive skin tone).',
+          });
           parts.push({
             inlineData: {
               mimeType: 'image/png',
               data: fs.readFileSync(faceMasterPath).toString('base64'),
             },
           });
+          attachedReferences.push('01_FACE_MASTER');
         }
 
+        // 2. Attach 02_BODY_MASTER if connected
+        const bodyConnected = connectedAssets['02_BODY_MASTER'] !== false;
+        const bodyMasterPath = path.resolve('public/assets/aistudio/Master_sheet_847b0873.png');
+        if (bodyConnected && fs.existsSync(bodyMasterPath)) {
+          parts.push({
+            text: 'CANONICAL REFERENCE 02 [02_BODY_MASTER]: Full body reference sheet for Diego Navarro (5 full-body views, 1.83m lean athletic physique, shoulder-to-head ratio, limb proportions).',
+          });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/png',
+              data: fs.readFileSync(bodyMasterPath).toString('base64'),
+            },
+          });
+          attachedReferences.push('02_BODY_MASTER');
+        }
+
+        // 3. Attach 03_ACCESSORIES_MASTER if connected
+        const accConnected = connectedAssets['03_ACCESSORIES_MASTER'] !== false;
+        const accMasterPath = path.resolve('public/assets/aistudio/Infograf_a_de_accesorios_minimalista_a072bf03.png');
+        if (accConnected && fs.existsSync(accMasterPath)) {
+          parts.push({
+            text: 'CANONICAL REFERENCE 03 [03_ACCESSORIES_MASTER]: Accessories infographic (round metallic titanium wireframe glasses, minimalist Bauhaus watch with ivory dial, iPhone).',
+          });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/png',
+              data: fs.readFileSync(accMasterPath).toString('base64'),
+            },
+          });
+          attachedReferences.push('03_ACCESSORIES_MASTER');
+        }
+
+        // 4. Attach 04_EXPRESSIONS_MASTER if connected
+        const expConnected = connectedAssets['04_EXPRESSIONS_MASTER'] !== false;
+        const expMasterPath = path.resolve('public/assets/aistudio/Tabla_de_expresiones__Sujeto_01_60d2f7c4.png');
+        if (expConnected && fs.existsSync(expMasterPath)) {
+          parts.push({
+            text: 'CANONICAL REFERENCE 04 [04_EXPRESSIONS_MASTER]: Expressions catalog for Diego Navarro (Neutral, Slight Smile, Concentration, Soft Surprise, Mid-Speech, Tired).',
+          });
+          parts.push({
+            inlineData: {
+              mimeType: 'image/png',
+              data: fs.readFileSync(expMasterPath).toString('base64'),
+            },
+          });
+          attachedReferences.push('04_EXPRESSIONS_MASTER');
+        }
+
+        // Attach Candidate Image to audit
         const cleanCandidate = candidateImageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
+        parts.push({
+          text: 'CANDIDATE IMAGE UNDER PRODUCTION AUDIT: Image generated to evaluate against attached canonical references.',
+        });
         parts.push({
           inlineData: {
             mimeType: 'image/png',
@@ -496,22 +572,22 @@ app.post('/api/audit-candidate', async (req, res) => {
           },
         });
 
-        const auditPrompt = `Eres el Auditor de Continuidad de "SUBJECT 01 — Identity Studio | Alpha v0.2".
-Tu misión es comparar la imagen candidata con respecto a la referencia canónica de Diego Navarro adjunta y las directivas de escena:
-- Escena solicitada: ${JSON.stringify(sceneConfig)}
-- Prompt usado: ${productionPrompt}
+        const auditPrompt = `You are the Continuity Auditor of "SUBJECT 01 — Identity Studio | Alpha v0.2".
+Compare the candidate image against the attached canonical references of Diego Navarro and scene directives:
+- Requested Scene: ${JSON.stringify(sceneConfig)}
+- Production Prompt: ${productionPrompt}
 
-Evalúa estos criterios y responde estrictamente en JSON (sin markdown adicional):
+Evaluate each criterion strictly. Respond with a valid JSON object matching this schema:
 {
-  "crit_facial_structure": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "análisis concreto", "evidence": "evidencia visual observable" },
-  "crit_hair_beard": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_skin_texture": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_head_body_prop": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_body_anatomy": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_accessories": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_expression": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_scene_faithfulness": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." },
-  "crit_photo_realism": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "...", "evidence": "..." }
+  "crit_facial_structure": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "concrete visual analysis comparing with 01_FACE_MASTER", "evidence": "observable physical markers" },
+  "crit_hair_beard": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "curl pattern and 3-day beard density", "evidence": "specific hair texture evidence" },
+  "crit_skin_texture": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "warm olive tone and skin pores", "evidence": "spectral/texture evidence" },
+  "crit_head_body_prop": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "proportions compared with 02_BODY_MASTER", "evidence": "anatomical evidence" },
+  "crit_body_anatomy": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "hands, limbs, and posture", "evidence": "finger and limb evidence" },
+  "crit_accessories": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "glasses, watch, phone compliance", "evidence": "accessory frame and dial evidence" },
+  "crit_expression": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "facial expression matching requested emotion", "evidence": "periorbital and perioral tension" },
+  "crit_scene_faithfulness": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "background environment and framing", "evidence": "architectural and light evidence" },
+  "crit_photo_realism": { "verdict": "PASS"|"REVIEW"|"FAIL"|"UNVERIFIED", "observations": "believable casual smartphone optical realism without AI plastic glaze", "evidence": "depth of field and grain evidence" }
 }`;
 
         parts.push({ text: auditPrompt });
@@ -524,30 +600,82 @@ Evalúa estos criterios y responde estrictamente en JSON (sin markdown adicional
           },
         });
 
-        const parsedNotes = JSON.parse(auditResponse.text || '{}');
-        const hasNotes = Object.keys(parsedNotes).length > 0;
+        let parsedNotes: any = {};
+        let validStructuredDataReturned = false;
+        try {
+          parsedNotes = JSON.parse(auditResponse.text || '{}');
+          validStructuredDataReturned = typeof parsedNotes === 'object' && Object.keys(parsedNotes).length > 0;
+        } catch {
+          validStructuredDataReturned = false;
+        }
+
+        const executionStatus = validStructuredDataReturned ? 'SUCCESS' : 'EMPTY';
         return res.json({
           modelAuditNotes: parsedNotes,
-          auditStatus: hasNotes ? 'SUCCESS' : 'EMPTY',
+          auditStatus: executionStatus,
+          executionMetadata: {
+            executionStatus,
+            modelIdentifier: 'gemini-3.8-flash',
+            candidateImageAttached: true,
+            attachedReferences,
+            evaluatedCriteria: Object.keys(parsedNotes),
+            validStructuredDataReturned,
+            errorCategory: validStructuredDataReturned ? undefined : 'MALFORMED_MODEL_RESPONSE',
+            timestamp: new Date().toISOString(),
+          },
         });
       } catch (geminiAuditErr: any) {
+        const errStr = geminiAuditErr?.message || String(geminiAuditErr);
+        const isQuota = errStr.includes('429') || errStr.includes('quota') || geminiAuditErr?.status === 'RESOURCE_EXHAUSTED';
+        const errorCategory = isQuota ? 'QUOTA_EXHAUSTED' : 'AI_SERVICE_UNAVAILABLE';
+
         return res.json({
           modelAuditNotes: {},
           auditStatus: 'FAILED',
-          auditMessage: geminiAuditErr?.message || 'Error en llamada multimodal',
+          executionMetadata: {
+            executionStatus: 'FAILED',
+            modelIdentifier: 'gemini-3.8-flash',
+            candidateImageAttached: true,
+            attachedReferences,
+            evaluatedCriteria: [],
+            validStructuredDataReturned: false,
+            errorCategory,
+            errorMessage: errStr,
+            timestamp: new Date().toISOString(),
+          },
         });
       }
     }
 
+    // SVG composite or no AI service available
     return res.json({
       modelAuditNotes: {},
       auditStatus: 'NOT_RUN',
-      auditMessage: 'Auditoría visual multimodal no ejecutada (formato no soportado o servicio no disponible).',
+      executionMetadata: {
+        executionStatus: 'NOT_RUN',
+        candidateImageAttached: false,
+        attachedReferences: [],
+        evaluatedCriteria: [],
+        validStructuredDataReturned: false,
+        errorCategory: 'UNSUPPORTED_IMAGE_FORMAT',
+        errorMessage: 'Auditoría visual multimodal no ejecutada (formato compuesto no procesable o servicio no disponible).',
+        timestamp: new Date().toISOString(),
+      },
     });
   } catch (error: any) {
     return res.status(500).json({
-      error: 'Error ejecutando auditoría de continuidad: ' + (error?.message || error),
+      error: 'Error en servicio de auditoría: ' + (error?.message || error),
       auditStatus: 'FAILED',
+      executionMetadata: {
+        executionStatus: 'FAILED',
+        candidateImageAttached: false,
+        attachedReferences: [],
+        evaluatedCriteria: [],
+        validStructuredDataReturned: false,
+        errorCategory: 'UNKNOWN_SERVER_ERROR',
+        errorMessage: error?.message || String(error),
+        timestamp: new Date().toISOString(),
+      },
     });
   }
 });

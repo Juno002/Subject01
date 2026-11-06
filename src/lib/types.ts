@@ -117,6 +117,36 @@ export type AssessmentType =
   | 'TECHNICAL_FAILURE'
   | 'UNVERIFIED_NO_EVIDENCE';
 
+export type AuditExecutionStatus =
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'UNSUPPORTED_FORMAT'
+  | 'EMPTY'
+  | 'MALFORMED'
+  | 'NOT_RUN';
+
+export type AuditErrorCategory =
+  | 'MISSING_CANDIDATE_IMAGE'
+  | 'UNSUPPORTED_IMAGE_FORMAT'
+  | 'AI_SERVICE_UNAVAILABLE'
+  | 'QUOTA_EXHAUSTED'
+  | 'MODEL_TIMEOUT'
+  | 'MALFORMED_MODEL_RESPONSE'
+  | 'REFERENCE_ATTACHMENT_FAILED'
+  | 'UNKNOWN_SERVER_ERROR';
+
+export interface ServerAuditExecutionMetadata {
+  executionStatus: AuditExecutionStatus;
+  modelIdentifier?: string;
+  candidateImageAttached: boolean;
+  attachedReferences: CanonicalAssetId[];
+  evaluatedCriteria: string[];
+  validStructuredDataReturned: boolean;
+  errorCategory?: AuditErrorCategory;
+  errorMessage?: string;
+  timestamp: string;
+}
+
 export interface AuditCriterion {
   id: string;
   label: string;
@@ -135,7 +165,8 @@ export interface ContinuityAuditReport {
   criteria: AuditCriterion[];
   suggestedCorrections: string[];
   unassessableNotice?: string;
-  auditExecutionStatus?: 'SUCCESS' | 'FAILED' | 'UNSUPPORTED_FORMAT' | 'EMPTY' | 'MALFORMED' | 'NOT_RUN';
+  auditExecutionStatus?: AuditExecutionStatus;
+  serverExecutionMetadata?: ServerAuditExecutionMetadata;
 }
 
 export interface ProductionResult {

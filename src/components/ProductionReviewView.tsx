@@ -295,6 +295,42 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
               {continuityAudit?.summaryEs}
             </div>
 
+            {/* Server-Authoritative Execution Traceability Bar */}
+            {continuityAudit?.serverExecutionMetadata && (
+              <div className="bg-[#090D14] p-3 rounded-lg border border-slate-800 text-[11px] font-mono text-slate-400 space-y-1">
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-cyan-400 font-semibold">Trazabilidad Multimodal del Servidor:</span>
+                  <span className="text-[10px]">
+                    Estado:{' '}
+                    <strong
+                      className={
+                        continuityAudit.serverExecutionMetadata.executionStatus === 'SUCCESS'
+                          ? 'text-emerald-400'
+                          : 'text-amber-400'
+                      }
+                    >
+                      {continuityAudit.serverExecutionMetadata.executionStatus}
+                    </strong>
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+                  <span>Modelo: {continuityAudit.serverExecutionMetadata.modelIdentifier || 'No invocado'}</span>
+                  <span>Candidato adjunto: {continuityAudit.serverExecutionMetadata.candidateImageAttached ? 'SÍ' : 'NO'}</span>
+                  <span>
+                    Referencias adjuntas:{' '}
+                    {continuityAudit.serverExecutionMetadata.attachedReferences?.length > 0
+                      ? continuityAudit.serverExecutionMetadata.attachedReferences.join(', ')
+                      : 'Ninguna'}
+                  </span>
+                </div>
+                {continuityAudit.serverExecutionMetadata.errorMessage && (
+                  <div className="text-[10px] text-rose-400">
+                    Aviso: {continuityAudit.serverExecutionMetadata.errorMessage}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Criteria Evaluation List (9 Points) */}
             <div className="space-y-2.5">
               <span className="font-mono text-[10px] text-cyan-400 uppercase tracking-wider block">

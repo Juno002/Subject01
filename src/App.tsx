@@ -169,6 +169,7 @@ export default function App() {
       let modelAuditNotes = {};
       let auditStatus: 'SUCCESS' | 'FAILED' | 'UNSUPPORTED_FORMAT' | 'EMPTY' | 'MALFORMED' | 'NOT_RUN' = 'NOT_RUN';
       let auditErrorMessage: string | undefined = undefined;
+      let serverExecutionMetadata: any = undefined;
 
       if (generatedImageUrl) {
         try {
@@ -179,13 +180,18 @@ export default function App() {
               candidateImageBase64: generatedImageUrl,
               sceneConfig: updatedConfig,
               productionPrompt: promptData.fullModelPrompt,
+              connectedAssets: canonicalStatusMap,
             }),
           });
           if (auditRes.ok) {
             const auditData = await auditRes.json();
             modelAuditNotes = auditData.modelAuditNotes || {};
-            auditStatus = auditData.auditStatus || (Object.keys(modelAuditNotes).length > 0 ? 'SUCCESS' : 'EMPTY');
-            auditErrorMessage = auditData.auditMessage;
+            serverExecutionMetadata = auditData.executionMetadata;
+            auditStatus =
+              serverExecutionMetadata?.executionStatus ||
+              auditData.auditStatus ||
+              (Object.keys(modelAuditNotes).length > 0 ? 'SUCCESS' : 'EMPTY');
+            auditErrorMessage = serverExecutionMetadata?.errorMessage || auditData.auditMessage;
           } else {
             auditStatus = 'FAILED';
             auditErrorMessage = `HTTP ${auditRes.status}`;
@@ -203,6 +209,7 @@ export default function App() {
         modelAuditNotes,
         auditStatus,
         auditErrorMessage,
+        serverExecutionMetadata,
       });
 
       const finalResult: ProductionResult = {
