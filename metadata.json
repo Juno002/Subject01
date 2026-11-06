@@ -1,0 +1,6 @@
+{
+  "name": "SUBJECT 01 — Identity Studio | Alpha v0.2",
+  "description": "Estudio experimental de gestión de identidad visual y generación fotográfica para Diego Navarro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
