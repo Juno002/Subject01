@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { validateModelAuditResponse } from './src/lib/auditModelSchema';
 
 dotenv.config();
 
@@ -600,27 +601,62 @@ Evaluate each criterion strictly. Respond with a valid JSON object matching this
           },
         });
 
-        let parsedNotes: any = {};
-        let validStructuredDataReturned = false;
+        let parsedNotes: any = null;
+        let isJsonValid = false;
         try {
           parsedNotes = JSON.parse(auditResponse.text || '{}');
-          validStructuredDataReturned = typeof parsedNotes === 'object' && Object.keys(parsedNotes).length > 0;
+          isJsonValid = true;
         } catch {
-          validStructuredDataReturned = false;
+          isJsonValid = false;
         }
 
-        const executionStatus = validStructuredDataReturned ? 'SUCCESS' : 'EMPTY';
+        if (!isJsonValid || parsedNotes === null || typeof parsedNotes !== 'object' || Array.isArray(parsedNotes)) {
+          return res.json({
+            modelAuditNotes: {},
+            auditStatus: 'MALFORMED',
+            executionMetadata: {
+              executionStatus: 'MALFORMED',
+              modelIdentifier: 'gemini-3.8-flash',
+              candidateImageAttached: true,
+              attachedReferences,
+              evaluatedCriteria: [],
+              validStructuredDataReturned: false,
+              errorCategory: 'MALFORMED_MODEL_RESPONSE',
+              errorMessage: 'La respuesta devuelta por el modelo no es un objeto JSON válido.',
+              timestamp: new Date().toISOString(),
+            },
+          });
+        }
+
+        const validation = validateModelAuditResponse(parsedNotes);
+        if (!validation.isValid || !validation.validatedData) {
+          return res.json({
+            modelAuditNotes: {},
+            auditStatus: 'MALFORMED',
+            executionMetadata: {
+              executionStatus: 'MALFORMED',
+              modelIdentifier: 'gemini-3.8-flash',
+              candidateImageAttached: true,
+              attachedReferences,
+              evaluatedCriteria: Object.keys(parsedNotes),
+              validStructuredDataReturned: false,
+              errorCategory: 'MALFORMED_MODEL_RESPONSE',
+              errorMessage: validation.errorDescription || 'La respuesta del modelo no cumple con el esquema requerido de 9 criterios.',
+              timestamp: new Date().toISOString(),
+            },
+          });
+        }
+
         return res.json({
-          modelAuditNotes: parsedNotes,
-          auditStatus: executionStatus,
+          modelAuditNotes: validation.validatedData,
+          auditStatus: 'SUCCESS',
           executionMetadata: {
-            executionStatus,
+            executionStatus: 'SUCCESS',
             modelIdentifier: 'gemini-3.8-flash',
             candidateImageAttached: true,
             attachedReferences,
-            evaluatedCriteria: Object.keys(parsedNotes),
-            validStructuredDataReturned,
-            errorCategory: validStructuredDataReturned ? undefined : 'MALFORMED_MODEL_RESPONSE',
+            evaluatedCriteria: Object.keys(validation.validatedData),
+            validStructuredDataReturned: true,
             timestamp: new Date().toISOString(),
           },
         });

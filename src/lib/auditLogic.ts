@@ -8,6 +8,7 @@ import {
   SceneConfig,
   ServerAuditExecutionMetadata,
 } from './types';
+import { REQUIRED_CRITERIA_IDS } from './auditModelSchema';
 
 export interface AuditInputParams {
   sceneConfig: SceneConfig;
@@ -26,17 +27,7 @@ interface ValidatedCriterionResult {
   assessmentType: AssessmentType;
 }
 
-const KNOWN_CRITERIA_IDS = new Set([
-  'crit_facial_structure',
-  'crit_hair_beard',
-  'crit_skin_texture',
-  'crit_head_body_prop',
-  'crit_body_anatomy',
-  'crit_accessories',
-  'crit_expression',
-  'crit_scene_faithfulness',
-  'crit_photo_realism',
-]);
+const KNOWN_CRITERIA_IDS: Set<string> = new Set(REQUIRED_CRITERIA_IDS);
 
 const GENERIC_EVIDENCE_PLATITUDES = new Set([
   'face matches perfectly',
@@ -53,18 +44,19 @@ const GENERIC_EVIDENCE_PLATITUDES = new Set([
 ]);
 
 /**
- * Validates a single criterion note against strict verification gates (S01-FIX-001B).
+ * Validates a single criterion note against strict verification gates (S01-FIX-001C).
  *
- * A criterion MUST NOT receive PASS or VERIFIED_COMPARISON unless:
- * 1. auditStatus === 'SUCCESS'.
- * 2. The backend actually completed a multimodal audit request.
- * 3. The candidate image was successfully submitted for analysis.
- * 4. The necessary canonical reference image was successfully submitted for that specific criterion.
- * 5. The model returned a structurally valid result for that criterion.
- * 6. Observations and evidence are nonempty and relevant (not generic platitudes).
- * 7. The result contains no detected contradiction.
- *
- * If a criterion has valid evidence of a real discrepancy, its FAIL result is preserved.
+ * Execution gate order (Defect 1 correction):
+ * 1. Check known criterion ID.
+ * 2. Check client canonical connection.
+ * 3. Check occlusion safeguard for closed framing.
+ * 4. Check server execution status (must be SUCCESS).
+ * 5. Check candidate image attachment (must be confirmed by server).
+ * 6. Check required canonical reference attachment (must be confirmed by server).
+ * 7. Validate model structured data (valid verdict, nonempty observations & evidence).
+ * 8. Only after all execution gates pass, process FAIL or PASS.
+ *    - For genuine FAIL: preserve FAIL with VERIFIED_COMPARISON.
+ *    - For PASS: check contradiction triggers, negative constraints, and reject generic platitudes.
  */
 function validateModelCriterionNote(params: {
   criterionId: string;
@@ -89,7 +81,7 @@ function validateModelCriterionNote(params: {
     auditErrorMessage,
   } = params;
 
-  // Unknown criterion identifier rejection
+  // 1. Unknown criterion identifier rejection
   if (!KNOWN_CRITERIA_IDS.has(criterionId)) {
     return {
       verdict: 'UNVERIFIED',
@@ -99,7 +91,7 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // 1. Client Canonical Master connection check
+  // 2. Client Canonical Master connection check
   if (requiredReferenceId && canonicalStatus[requiredReferenceId] === false) {
     return {
       verdict: 'UNVERIFIED',
@@ -109,7 +101,7 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // 2. Camera framing occlusion safeguard
+  // 3. Camera framing occlusion safeguard
   if (
     criterionId === 'crit_head_body_prop' &&
     (sceneConfig.shotType === 'portrait' || sceneConfig.shotType === 'selfie')
@@ -123,66 +115,7 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // 3. Preserve explicit FAIL results if model reported a legitimate discrepancy
-  if (raw && typeof raw === 'object' && raw.verdict === 'FAIL') {
-    const failObs = typeof raw.observations === 'string' ? raw.observations.trim() : '';
-    const failEv = typeof raw.evidence === 'string' ? raw.evidence.trim() : '';
-    return {
-      verdict: 'FAIL',
-      observations: failObs || 'Discrepancia crítica observada por el modelo auditor.',
-      evidence: failEv || 'Discrepancia visual registrada en el informe.',
-      assessmentType: 'VERIFIED_COMPARISON',
-    };
-  }
-
-  // 4. Contradiction safeguard (claiming PASS while describing discrepancy)
-  if (raw && typeof raw === 'object' && raw.verdict === 'PASS') {
-    const textToCheck = `${raw.observations || ''} ${raw.evidence || ''}`.toLowerCase();
-    const contradictionTriggers = [
-      'discrepancia severa',
-      'discrepancia',
-      'no coincide',
-      'incompatible',
-      'no se parece',
-      'distorsión severa',
-      'deformidad',
-      'falla crítica',
-      'no corresponde a diego',
-      'ojos de otro color',
-      'sin barba cuando requiere barba',
-      'rasgos faciales distintos',
-      'no cumple con la norma',
-    ];
-    const foundContradiction = contradictionTriggers.find((trigger) => textToCheck.includes(trigger));
-    if (foundContradiction) {
-      return {
-        verdict: 'FAIL',
-        observations: `Fallo de seguridad (Resultado Contradictorio): El modelo asignó PASS pero reportó discrepancia ("${foundContradiction}"): ${raw.observations}`,
-        evidence: `Evidencia contradictoria en el reporte: ${raw.evidence}`,
-        assessmentType: 'TECHNICAL_FAILURE',
-      };
-    }
-
-    // Domain constraint conflict for glasses: off
-    if (criterionId === 'crit_accessories' && sceneConfig.glasses === 'off') {
-      if (
-        textToCheck.includes('lleva gafas') ||
-        textToCheck.includes('porta gafas') ||
-        textToCheck.includes('gafas visibles') ||
-        textToCheck.includes('montura detectada')
-      ) {
-        return {
-          verdict: 'FAIL',
-          observations:
-            'Contradicción con directiva: Se detectaron gafas visibles en el candidato cuando la directiva de escena exigía sin gafas.',
-          evidence: String(raw.evidence || textToCheck),
-          assessmentType: 'VERIFIED_COMPARISON',
-        };
-      }
-    }
-  }
-
-  // 5. STRICT GATE: Non-successful execution status checks
+  // 4. STRICT EXECUTION GATE: Validate execution status BEFORE accepting ANY model verdict
   if (effectiveAuditStatus !== 'SUCCESS') {
     if (effectiveAuditStatus === 'FAILED') {
       return {
@@ -219,8 +152,7 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // 6. STRICT GATE: Candidate Image Attachment Verification
-  // The backend must confirm that the candidate image was actually attached to the request
+  // 5. STRICT EXECUTION GATE: Candidate image attachment verification
   if (!serverMetadata || !serverMetadata.candidateImageAttached) {
     return {
       verdict: 'UNVERIFIED',
@@ -231,8 +163,7 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // 7. STRICT GATE: Reference-Aware Attachment Verification
-  // The required reference must have been physically attached to the model request
+  // 6. STRICT EXECUTION GATE: Reference-aware attachment verification
   if (requiredReferenceId) {
     const isReferenceAttached = serverMetadata.attachedReferences?.includes(requiredReferenceId);
     if (!isReferenceAttached) {
@@ -245,8 +176,8 @@ function validateModelCriterionNote(params: {
     }
   }
 
-  // 8. STRICT GATE: Model Response Structure & Data Checks
-  if (!raw || typeof raw !== 'object') {
+  // 7. MODEL DATA VALIDATION: Must have valid raw data structure
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return {
       verdict: 'UNVERIFIED',
       observations: `Sin datos específicos devueltos por el modelo auditor para "${label}".`,
@@ -278,8 +209,71 @@ function validateModelCriterionNote(params: {
     };
   }
 
-  // Positive verdict checks: require substantive, non-trivial evidence
+  // 8. GENUINE FAIL: When comparison occurred successfully and FAIL is supported
+  if (rawVerdict === 'FAIL') {
+    if (evidence.length < 10) {
+      return {
+        verdict: 'UNVERIFIED',
+        observations: `Aviso diagnóstico no verificado: El modelo reportó discrepancia pero la evidencia es insuficiente (${observations}).`,
+        evidence: 'Evidencia visual insuficiente para validar técnicamente el fallo.',
+        assessmentType: 'UNVERIFIED_NO_EVIDENCE',
+      };
+    }
+    return {
+      verdict: 'FAIL',
+      observations,
+      evidence,
+      assessmentType: 'VERIFIED_COMPARISON',
+    };
+  }
+
+  // 9. CONTRADICTION DETECTION (for PASS)
   if (rawVerdict === 'PASS') {
+    const textToCheck = `${observations} ${evidence}`.toLowerCase();
+    const contradictionTriggers = [
+      'discrepancia severa',
+      'discrepancia',
+      'no coincide',
+      'incompatible',
+      'no se parece',
+      'distorsión severa',
+      'deformidad',
+      'falla crítica',
+      'no corresponde a diego',
+      'ojos de otro color',
+      'sin barba cuando requiere barba',
+      'rasgos faciales distintos',
+      'no cumple con la norma',
+    ];
+    const foundContradiction = contradictionTriggers.find((trigger) => textToCheck.includes(trigger));
+    if (foundContradiction) {
+      return {
+        verdict: 'FAIL',
+        observations: `Fallo de seguridad (Resultado Contradictorio): El modelo asignó PASS pero reportó discrepancia ("${foundContradiction}"): ${observations}`,
+        evidence: `Evidencia contradictoria en el reporte: ${evidence}`,
+        assessmentType: 'TECHNICAL_FAILURE',
+      };
+    }
+
+    // Domain constraint conflict for glasses: off
+    if (criterionId === 'crit_accessories' && sceneConfig.glasses === 'off') {
+      if (
+        textToCheck.includes('lleva gafas') ||
+        textToCheck.includes('porta gafas') ||
+        textToCheck.includes('gafas visibles') ||
+        textToCheck.includes('montura detectada')
+      ) {
+        return {
+          verdict: 'FAIL',
+          observations:
+            'Contradicción con directiva: Se detectaron gafas visibles en el candidato cuando la directiva de escena exigía sin gafas.',
+          evidence: String(evidence || textToCheck),
+          assessmentType: 'VERIFIED_COMPARISON',
+        };
+      }
+    }
+
+    // 10. SUBSTANTIVE EVIDENCE CHECKS FOR PASS
     if (evidence.length < 10) {
       return {
         verdict: 'UNVERIFIED',
@@ -290,7 +284,7 @@ function validateModelCriterionNote(params: {
       };
     }
 
-    // Reject generic platitudes (e.g. "Face matches perfectly")
+    // Reject generic platitudes
     const cleanEvidence = evidence.toLowerCase();
     if (GENERIC_EVIDENCE_PLATITUDES.has(cleanEvidence)) {
       return {
