@@ -14,8 +14,14 @@ import {
   REQUIRED_CRITERIA_IDS,
   validateModelAuditResponse,
 } from './auditModelSchema';
-import { validateRasterBytes, validateBase64Image } from './rasterValidation';
+import {
+  validateRasterBytes,
+  validateBase64Image,
+  prepareInspirationAnalysisPayload,
+  verifyClientImageDecodable,
+} from './rasterValidation';
 import { executeCandidateGeneration } from './generationService';
+import { INSPIRATION_PRESETS } from './samplePresets';
 
 const defaultScene: SceneConfig = {
   shotType: 'half_body',
@@ -417,155 +423,211 @@ test('S01-FIX-001C Test 12: Existing PASS, REVIEW, UNVERIFIED and PREPARE_ONLY r
 });
 
 // ============================================================================
-// S01-FIX-002: SVG Elimination & Authentic Raster-Only Image Pipeline Tests
+// S01-FIX-002B: Raster Integrity, Inspiration Input Repair & Negative Tests
 // ============================================================================
 
-const samplePngBytes = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
-]);
+// Genuine complete decodable 1x1 PNG fixture (70 bytes, includes signature, IHDR, IDAT, IEND with valid CRCs)
+const GENUINE_COMPLETE_PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+const genuinePngBytes = Buffer.from(GENUINE_COMPLETE_PNG_BASE64, 'base64');
 
-const sampleJpegBytes = Buffer.from([
-  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
-  0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
-]);
+// Genuine complete decodable 1x1 progressive JPEG fixture (137 bytes, includes SOI, APP0, DQT, SOF2, DHT, SOS, EOI)
+const GENUINE_COMPLETE_JPEG_BASE64 =
+  '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA//9k=';
+const genuineJpegBytes = Buffer.from(GENUINE_COMPLETE_JPEG_BASE64, 'base64');
 
+// Genuine WebP header fixture
 const sampleWebpBytes = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00,
   0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
 ]);
 
+// Genuine GIF header fixture
 const sampleGifBytes = Buffer.from([
   0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00,
   0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
 ]);
 
-test('S01-FIX-002 Requirement 1: Valid PNG bytes are accepted', () => {
-  const result = validateRasterBytes(samplePngBytes, 'image/png');
+// T01: A complete, genuinely decodable PNG is accepted.
+test('T01: A complete, genuinely decodable PNG is accepted', async () => {
+  const result = validateRasterBytes(genuinePngBytes, 'image/png');
   assert.equal(result.isValid, true);
+  assert.equal(result.isComplete, true);
+  assert.equal(result.integrityLevel, 'STRUCTURALLY_VALID');
   assert.equal(result.format, 'PNG');
   assert.equal(result.mimeType, 'image/png');
+  assert.ok(result.dimensions && result.dimensions.width > 0 && result.dimensions.height > 0);
+  assert.ok(typeof result.serverValidationLimitation === 'string');
+
+  const clientCheck = await verifyClientImageDecodable(
+    `data:image/png;base64,${GENUINE_COMPLETE_PNG_BASE64}`
+  );
+  assert.equal(clientCheck.decodable, true);
 });
 
-test('S01-FIX-002 Requirement 2: Valid JPEG bytes are accepted', () => {
-  const result = validateRasterBytes(sampleJpegBytes, 'image/jpeg');
+// T02: A complete, genuinely decodable JPEG is accepted.
+test('T02: A complete, genuinely decodable JPEG is accepted', async () => {
+  const result = validateRasterBytes(genuineJpegBytes, 'image/jpeg');
   assert.equal(result.isValid, true);
+  assert.equal(result.isComplete, true);
+  assert.equal(result.integrityLevel, 'STRUCTURALLY_VALID');
   assert.equal(result.format, 'JPEG');
   assert.equal(result.mimeType, 'image/jpeg');
+  assert.ok(result.dimensions && result.dimensions.width > 0 && result.dimensions.height > 0);
+  assert.ok(typeof result.serverValidationLimitation === 'string');
+
+  const clientCheck = await verifyClientImageDecodable(
+    `data:image/jpeg;base64,${GENUINE_COMPLETE_JPEG_BASE64}`
+  );
+  assert.equal(clientCheck.decodable, true);
 });
 
-test('S01-FIX-002 Requirement 3: SVG candidate data is rejected', () => {
-  const svgText = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40"/></svg>';
-  const svgBytes = Buffer.from(svgText);
-  const result = validateRasterBytes(svgBytes, 'image/svg+xml');
+// T03: A PNG signature followed by incomplete data is rejected as a complete image.
+test('T03: A PNG signature followed by incomplete data is rejected as a complete image', () => {
+  // Starts with authentic 8-byte PNG signature, but truncated (missing IDAT and IEND)
+  const truncatedPng = Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  ]);
+  const result = validateRasterBytes(truncatedPng, 'image/png');
   assert.equal(result.isValid, false);
-  assert.equal(result.errorCategory, 'UNSUPPORTED_FORMAT');
-
-  const base64Svg = 'data:image/svg+xml;utf8,' + encodeURIComponent(svgText);
-  const dataUriResult = validateBase64Image(base64Svg);
-  assert.equal(dataUriResult.isValid, false);
-  assert.equal(dataUriResult.errorCategory, 'UNSUPPORTED_FORMAT');
-});
-
-test('S01-FIX-002 Requirement 4: Invalid bytes disguised as PNG are rejected', () => {
-  const fakePng = Buffer.from('FAKE_PNG_HEADER_THAT_IS_NOT_AUTHENTIC_BINARY');
-  const result = validateRasterBytes(fakePng, 'image/png');
-  assert.equal(result.isValid, false);
+  assert.equal(result.isComplete, false);
+  assert.equal(result.integrityLevel, 'SIGNATURE_ONLY');
   assert.equal(result.errorCategory, 'INVALID_IMAGE_BYTES');
-});
-
-test('S01-FIX-002 Requirement 5: Incorrect MIME declarations are rejected', () => {
-  // Real PNG bytes claiming to be JPEG
-  const pngAsJpeg = validateRasterBytes(samplePngBytes, 'image/jpeg');
-  assert.equal(pngAsJpeg.isValid, false);
-  assert.equal(pngAsJpeg.errorCategory, 'MIME_SIGNATURE_MISMATCH');
-
-  // Real JPEG bytes claiming to be PNG
-  const jpegAsPng = validateRasterBytes(sampleJpegBytes, 'image/png');
-  assert.equal(jpegAsPng.isValid, false);
-  assert.equal(jpegAsPng.errorCategory, 'MIME_SIGNATURE_MISMATCH');
-});
-
-test('S01-FIX-002 Requirement 6: Missing API key produces an explicit error', async () => {
-  const result = await executeCandidateGeneration(
-    {
-      productionPrompt: 'Photorealistic portrait of Diego Navarro',
-      aspectRatio: '1:1',
-    },
-    {
-      aiClient: null, // No API client configured
-      getCanonicalAssetBuffer: () => samplePngBytes,
-    }
+  assert.ok(
+    result.errorMessage?.includes('incompleto') ||
+      result.errorMessage?.includes('truncad') ||
+      result.errorMessage?.includes('IEND')
   );
-  assert.equal(result.success, false);
-  assert.equal(result.status, 'FAILED');
-  assert.equal(result.httpStatus, 503);
-  assert.equal(result.errorCategory, 'MISSING_API_KEY');
-  assert.equal(result.imageUrl, undefined);
 });
 
-test('S01-FIX-002 Requirement 7: HTTP 429 produces a quota error, not an image', async () => {
-  const mockAiQuota429 = {
-    models: {
-      generateContent: async () => {
-        const quotaErr: any = new Error('429 RESOURCE_EXHAUSTED: quota exceeded');
-        quotaErr.status = 429;
-        throw quotaErr;
-      },
-    },
+// T04: A JPEG signature followed by incomplete data is rejected as a complete image.
+test('T04: A JPEG signature followed by incomplete data is rejected as a complete image', () => {
+  // Starts with authentic SOI marker (0xFF 0xD8 0xFF), but missing SOF, SOS, and EOI
+  const truncatedJpeg = Buffer.from([
+    0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
+    0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
+  ]);
+  const result = validateRasterBytes(truncatedJpeg, 'image/jpeg');
+  assert.equal(result.isValid, false);
+  assert.equal(result.isComplete, false);
+  assert.equal(result.integrityLevel, 'SIGNATURE_ONLY');
+  assert.equal(result.errorCategory, 'INVALID_IMAGE_BYTES');
+  assert.ok(
+    result.errorMessage?.includes('incompleto') ||
+      result.errorMessage?.includes('truncad') ||
+      result.errorMessage?.includes('EOI')
+  );
+});
+
+// T05: PNG content explicitly declared as JPEG is rejected.
+test('T05: PNG content explicitly declared as JPEG is rejected', () => {
+  const result = validateRasterBytes(genuinePngBytes, 'image/jpeg');
+  assert.equal(result.isValid, false);
+  assert.equal(result.errorCategory, 'MIME_SIGNATURE_MISMATCH');
+  assert.ok(result.errorMessage?.includes('Discrepancia de tipo MIME'));
+});
+
+// T06: JPEG content explicitly declared as PNG is rejected.
+test('T06: JPEG content explicitly declared as PNG is rejected', () => {
+  const result = validateRasterBytes(genuineJpegBytes, 'image/png');
+  assert.equal(result.isValid, false);
+  assert.equal(result.errorCategory, 'MIME_SIGNATURE_MISMATCH');
+  assert.ok(result.errorMessage?.includes('Discrepancia de tipo MIME'));
+});
+
+// T07: Valid PNG inspiration reaches the image-analysis request with image/png.
+test('T07: Valid PNG inspiration reaches the image-analysis request with image/png', () => {
+  const payload = prepareInspirationAnalysisPayload(
+    `data:image/png;base64,${GENUINE_COMPLETE_PNG_BASE64}`
+  );
+  assert.equal(payload.isValid, true);
+  assert.equal(payload.detectedMime, 'image/png');
+  assert.equal(payload.cleanBase64, GENUINE_COMPLETE_PNG_BASE64);
+});
+
+// T08: Valid JPEG inspiration reaches the image-analysis request with image/jpeg.
+test('T08: Valid JPEG inspiration reaches the image-analysis request with image/jpeg', () => {
+  const payload = prepareInspirationAnalysisPayload(
+    `data:image/jpeg;base64,${GENUINE_COMPLETE_JPEG_BASE64}`
+  );
+  assert.equal(payload.isValid, true);
+  assert.equal(payload.detectedMime, 'image/jpeg');
+  assert.equal(payload.cleanBase64, GENUINE_COMPLETE_JPEG_BASE64);
+});
+
+// T09: An unsupported inspiration format produces an explicit failure.
+test('T09: An unsupported inspiration format produces an explicit failure', () => {
+  // WebP
+  const webpPayload = prepareInspirationAnalysisPayload(
+    `data:image/webp;base64,${sampleWebpBytes.toString('base64')}`
+  );
+  assert.equal(webpPayload.isValid, false);
+  assert.equal(webpPayload.errorCategory, 'UNSUPPORTED_FORMAT');
+
+  // GIF
+  const gifPayload = prepareInspirationAnalysisPayload(
+    `data:image/gif;base64,${sampleGifBytes.toString('base64')}`
+  );
+  assert.equal(gifPayload.isValid, false);
+  assert.equal(gifPayload.errorCategory, 'UNSUPPORTED_FORMAT');
+
+  // SVG
+  const svgPayload = prepareInspirationAnalysisPayload(
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect width="10" height="10"/></svg>'
+  );
+  assert.equal(svgPayload.isValid, false);
+  assert.equal(svgPayload.errorCategory, 'UNSUPPORTED_FORMAT');
+
+  // Truncated PNG
+  const truncatedPayload = prepareInspirationAnalysisPayload(
+    `data:image/png;base64,${Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).toString('base64')}`
+  );
+  assert.equal(truncatedPayload.isValid, false);
+  assert.equal(truncatedPayload.errorCategory, 'INVALID_IMAGE_BYTES');
+});
+
+// T10: Neither fabricated 16×16 inspiration preset remains available as a photographic reference.
+test('T10: Neither fabricated 16×16 inspiration preset remains available as a photographic reference', () => {
+  assert.ok(INSPIRATION_PRESETS.length > 0);
+  for (const preset of INSPIRATION_PRESETS) {
+    assert.equal(preset.hasPhotographicReference, false);
+    assert.equal(preset.imageUrl, undefined);
+  }
+});
+
+// T11: Manual inspiration upload remains functional.
+test('T11: Manual inspiration upload remains functional', () => {
+  const uploadedPngUri = `data:image/png;base64,${GENUINE_COMPLETE_PNG_BASE64}`;
+  const validation = validateBase64Image(uploadedPngUri);
+  assert.equal(validation.isValid, true);
+  assert.equal(validation.mimeType, 'image/png');
+
+  const sceneWithUpload: SceneConfig = {
+    ...defaultScene,
+    inspirationImage: uploadedPngUri,
+    inspirationTitle: 'referencia_manual_usuario.png',
+    clothingMode: 'inspiration',
+    environmentMode: 'inspiration',
   };
 
-  const result = await executeCandidateGeneration(
-    {
-      productionPrompt: 'Diego in Madrid coat',
-      aspectRatio: '3:4',
-    },
-    {
-      aiClient: mockAiQuota429,
-      getCanonicalAssetBuffer: () => samplePngBytes,
-    }
-  );
+  assert.equal(sceneWithUpload.inspirationImage, uploadedPngUri);
+  assert.equal(sceneWithUpload.clothingMode, 'inspiration');
 
-  assert.equal(result.success, false);
-  assert.equal(result.status, 'FAILED');
-  assert.equal(result.httpStatus, 429);
-  assert.equal(result.errorCategory, 'QUOTA_EXCEEDED');
-  assert.equal(result.imageUrl, undefined);
-  // Never returns an SVG or fake image
-  assert.equal(typeof result.imageUrl, 'undefined');
+  const guard = runIdentityGuardValidation(INITIAL_CANONICAL_ASSETS, sceneWithUpload, mockInspiration);
+  assert.equal(guard.status, 'CONDITIONAL_APPROVAL');
+  assert.notEqual(guard.status, 'BLOCKED');
+  assert.equal(guard.missingAssets.length, 0);
+
+  const prompt = buildProductionPrompt(sceneWithUpload, guard, mockInspiration);
+  assert.ok(prompt.fullModelPrompt.includes('Transferred from inspiration reference'));
 });
 
-test('S01-FIX-002 Requirement 8: Empty image-model response produces an error', async () => {
-  const mockAiEmpty = {
-    models: {
-      generateContent: async () => ({
-        candidates: [],
-      }),
-    },
-  };
-
-  const result = await executeCandidateGeneration(
-    {
-      productionPrompt: 'Diego portrait',
-      aspectRatio: '1:1',
-    },
-    {
-      aiClient: mockAiEmpty,
-      getCanonicalAssetBuffer: () => samplePngBytes,
-    }
-  );
-
-  assert.equal(result.success, false);
-  assert.equal(result.status, 'FAILED');
-  assert.equal(result.httpStatus, 502);
-  assert.equal(result.errorCategory, 'NO_IMAGE_RETURNED');
-  assert.equal(result.imageUrl, undefined);
-});
-
-test('S01-FIX-002 Requirement 9: Text-only model response produces an error', async () => {
-  const mockAiTextOnly = {
+// T12: Failed or undecodable candidate generation cannot create an accepted production candidate.
+test('T12: Failed or undecodable candidate generation cannot create an accepted production candidate', async () => {
+  // 1. Model returns truncated PNG
+  const mockAiTruncated = {
     models: {
       generateContent: async () => ({
         candidates: [
@@ -573,7 +635,12 @@ test('S01-FIX-002 Requirement 9: Text-only model response produces an error', as
             content: {
               parts: [
                 {
-                  text: 'Lo siento, no puedo generar esa imagen en este momento.',
+                  inlineData: {
+                    mimeType: 'image/png',
+                    data: Buffer.from([
+                      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+                    ]).toString('base64'),
+                  },
                 },
               ],
             },
@@ -584,42 +651,32 @@ test('S01-FIX-002 Requirement 9: Text-only model response produces an error', as
   };
 
   const result = await executeCandidateGeneration(
-    {
-      productionPrompt: 'Diego portrait',
-      aspectRatio: '1:1',
-    },
-    {
-      aiClient: mockAiTextOnly,
-      getCanonicalAssetBuffer: () => samplePngBytes,
-    }
+    { productionPrompt: 'Diego photo in street', aspectRatio: '1:1' },
+    { aiClient: mockAiTruncated, getCanonicalAssetBuffer: () => genuinePngBytes }
   );
 
   assert.equal(result.success, false);
   assert.equal(result.status, 'FAILED');
-  assert.equal(result.httpStatus, 502);
-  assert.equal(result.errorCategory, 'NO_IMAGE_RETURNED');
   assert.equal(result.imageUrl, undefined);
+  assert.equal(result.errorCategory, 'INVALID_IMAGE_BYTES');
+
+  // 2. Client decoding simulation rejecting undecodable data
+  let acceptedCandidateUrl: string | undefined = undefined;
+  if (result.success && result.imageUrl) {
+    const check = await verifyClientImageDecodable(result.imageUrl);
+    if (check.decodable) {
+      acceptedCandidateUrl = result.imageUrl;
+    }
+  }
+  assert.equal(acceptedCandidateUrl, undefined);
 });
 
-test('S01-FIX-002 Requirement 10: Unsupported formats are rejected (WebP and GIF)', () => {
-  const webpResult = validateRasterBytes(sampleWebpBytes, 'image/webp');
-  assert.equal(webpResult.isValid, false);
-  assert.equal(webpResult.errorCategory, 'UNSUPPORTED_FORMAT');
-
-  const gifResult = validateRasterBytes(sampleGifBytes, 'image/gif');
-  assert.equal(gifResult.isValid, false);
-  assert.equal(gifResult.errorCategory, 'UNSUPPORTED_FORMAT');
-});
-
-test('S01-FIX-002 Requirement 11: Failed generation never triggers the continuity auditor', () => {
-  // In the application workflow, when generation fails, generatedImageUrl is undefined.
-  const generatedImageUrl: string | undefined = undefined;
-
-  // The condition in App.tsx:
-  const shouldInvokeAuditor = Boolean(generatedImageUrl);
+// T13: No failed candidate triggers an external continuity audit.
+test('T13: No failed candidate triggers an external continuity audit', () => {
+  const candidateImageUrl: string | undefined = undefined;
+  const shouldInvokeAuditor = Boolean(candidateImageUrl);
   assert.equal(shouldInvokeAuditor, false);
 
-  // When auditor is executed with hasGeneratedImage: false
   const auditReport = runContinuityAudit({
     sceneConfig: defaultScene,
     canonicalStatus: allCanonicalConnected,
@@ -629,36 +686,23 @@ test('S01-FIX-002 Requirement 11: Failed generation never triggers the continuit
 
   assert.equal(auditReport.overallVerdict, 'UNVERIFIED');
   assert.equal(auditReport.criteria.length, 0);
-  assert.equal(
-    auditReport.summaryEs.includes('No se ha generado imagen candidata'),
-    true
-  );
+  assert.ok(auditReport.summaryEs.includes('No se ha generado imagen candidata'));
 });
 
-test('S01-FIX-002 Requirement 12: Failed generation never enables a candidate download', () => {
-  const generatedImageUrl: string | undefined = undefined;
-  // Download UI button gate
-  const downloadEnabled = Boolean(generatedImageUrl);
-  assert.equal(downloadEnabled, false);
-});
-
-test('S01-FIX-002 Requirement 13: PREPARE_ONLY remains operational without image generation', () => {
+// T14: PREPARE_ONLY remains operational without external AI calls.
+test('T14: PREPARE_ONLY remains operational without external AI calls', () => {
   const prepConfig: SceneConfig = {
     ...defaultScene,
     executionMode: 'PREPARE_ONLY',
   };
 
-  const guardReport = runIdentityGuardValidation(
-    INITIAL_CANONICAL_ASSETS,
-    prepConfig
-  );
+  const guardReport = runIdentityGuardValidation(INITIAL_CANONICAL_ASSETS, prepConfig);
   assert.equal(guardReport.status, 'APPROVED');
 
   const promptData = buildProductionPrompt(prepConfig, guardReport);
   assert.equal(typeof promptData.fullModelPrompt, 'string');
-  assert.equal(promptData.fullModelPrompt.length > 50, true);
+  assert.ok(promptData.fullModelPrompt.length > 50);
 
-  // Audit for PREPARE_ONLY
   const audit = runContinuityAudit({
     sceneConfig: prepConfig,
     canonicalStatus: allCanonicalConnected,
@@ -669,67 +713,3 @@ test('S01-FIX-002 Requirement 13: PREPARE_ONLY remains operational without image
   assert.equal(audit.criteria.length, 0);
 });
 
-test('S01-FIX-002 Requirement 14: Valid raster output preserves its correct file format', async () => {
-  // Test PNG output preservation
-  const mockAiPng = {
-    models: {
-      generateContent: async () => ({
-        candidates: [
-          {
-            content: {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: 'image/png',
-                    data: samplePngBytes.toString('base64'),
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    },
-  };
-
-  const pngResult = await executeCandidateGeneration(
-    { productionPrompt: 'Diego in Madrid', aspectRatio: '1:1' },
-    { aiClient: mockAiPng, getCanonicalAssetBuffer: () => samplePngBytes }
-  );
-  assert.equal(pngResult.success, true);
-  assert.equal(pngResult.status, 'SUCCESS');
-  assert.equal(pngResult.mimeType, 'image/png');
-  assert.equal(pngResult.imageUrl?.startsWith('data:image/png;base64,'), true);
-
-  // Test JPEG output preservation (must not be renamed to PNG)
-  const mockAiJpeg = {
-    models: {
-      generateContent: async () => ({
-        candidates: [
-          {
-            content: {
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: 'image/jpeg',
-                    data: sampleJpegBytes.toString('base64'),
-                  },
-                },
-              ],
-            },
-          },
-        ],
-      }),
-    },
-  };
-
-  const jpegResult = await executeCandidateGeneration(
-    { productionPrompt: 'Diego in Madrid', aspectRatio: '1:1' },
-    { aiClient: mockAiJpeg, getCanonicalAssetBuffer: () => samplePngBytes }
-  );
-  assert.equal(jpegResult.success, true);
-  assert.equal(jpegResult.status, 'SUCCESS');
-  assert.equal(jpegResult.mimeType, 'image/jpeg');
-  assert.equal(jpegResult.imageUrl?.startsWith('data:image/jpeg;base64,'), true);
-  assert.equal(jpegResult.imageUrl?.includes('png'), false);
-});

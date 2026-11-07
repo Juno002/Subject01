@@ -22,6 +22,7 @@ import {
 import { runIdentityGuardValidation } from './lib/identityGuardLogic';
 import { buildProductionPrompt } from './lib/promptBuilderLogic';
 import { runContinuityAudit } from './lib/auditLogic';
+import { verifyClientImageDecodable } from './lib/rasterValidation';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'canon' | 'director' | 'guard' | 'review'>('director');
@@ -154,8 +155,21 @@ export default function App() {
 
           const genData = await genRes.json().catch(() => ({}));
           if (genRes.ok && genData.status === 'SUCCESS' && genData.imageUrl) {
-            generatedImageUrl = genData.imageUrl;
-            modelUsed = genData.modelUsed || 'gemini-3.1-flash-lite-image';
+            // Verify client-side image decodability before accepting candidate (DEFECT A requirement 3)
+            const decodeCheck = await verifyClientImageDecodable(genData.imageUrl);
+            if (decodeCheck.decodable) {
+              generatedImageUrl = genData.imageUrl;
+              modelUsed = genData.modelUsed || 'gemini-3.1-flash-lite-image';
+            } else {
+              generatedImageUrl = undefined;
+              generationError = {
+                category: 'INVALID_IMAGE_BYTES',
+                message:
+                  'La imagen candidata no pudo ser decodificada por el navegador: ' +
+                  (decodeCheck.error || 'datos de imagen incompletos o corruptos'),
+                httpStatus: 422,
+              };
+            }
           } else {
             generatedImageUrl = undefined;
             generationError = {

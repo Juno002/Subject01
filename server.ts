@@ -56,21 +56,27 @@ function getCanonicalAssetBuffer(assetId: string): Buffer | null {
 // 1. Inspiration Analyzer Endpoint
 app.post('/api/analyze-inspiration', async (req, res) => {
   try {
-    const { imageBase64, mimeType = 'image/jpeg', sceneContext = '' } = req.body;
+    const { imageBase64, mimeType: explicitMime, sceneContext = '' } = req.body;
 
     if (!imageBase64) {
-      return res.status(400).json({ error: 'Falta la imagen de inspiración en base64.' });
-    }
-
-    const validation = validateBase64Image(imageBase64, mimeType);
-    if (!validation.isValid) {
       return res.status(400).json({
-        error:
-          'Formato no soportado. SUBJECT 01 sólo admite imágenes ráster auténticas PNG o JPEG: ' +
-          (validation.errorMessage || 'Formato inválido'),
+        error: 'Falta la imagen de inspiración en base64.',
+        errorCategory: 'EMPTY_IMAGE_DATA',
       });
     }
 
+    // Determine actual supported format from image bytes and validate explicit MIME if provided
+    const validation = validateBase64Image(imageBase64, explicitMime);
+    if (!validation.isValid || !validation.mimeType) {
+      return res.status(400).json({
+        error:
+          'Formato no soportado o inválido. SUBJECT 01 sólo admite imágenes ráster auténticas PNG o JPEG: ' +
+          (validation.errorMessage || 'Formato inválido'),
+        errorCategory: validation.errorCategory || 'UNSUPPORTED_FORMAT',
+      });
+    }
+
+    const detectedMime = validation.mimeType;
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
 
     if (ai) {
@@ -103,7 +109,7 @@ Responde estrictamente en formato JSON con la siguiente estructura en español:
             parts: [
               {
                 inlineData: {
-                  mimeType,
+                  mimeType: detectedMime,
                   data: cleanBase64,
                 },
               },

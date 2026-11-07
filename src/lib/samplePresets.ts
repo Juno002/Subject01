@@ -1,21 +1,26 @@
+/**
+ * SUBJECT 01 — Scene and Narrative Presets (S01-FIX-002B)
+ *
+ * In compliance with S01-FIX-002B DEFECT C:
+ * - Fabricated 16x16 PNG color blocks have been permanently eliminated.
+ * - Because no authentic preset photographs exist in the repository,
+ *   image-based presets are disabled (hasPhotographicReference: false, imageUrl: undefined).
+ * - Presets serve as pure narrative scene presets (shot type, expression, glasses, and scene description).
+ * - User-uploaded photographic inspiration and manual configuration remain fully supported.
+ */
+
 export interface InspirationPreset {
   id: string;
   title: string;
   category: string;
   description: string;
-  imageUrl: string;
+  imageUrl?: string;
+  hasPhotographicReference: boolean;
   suggestedShotType: 'half_body' | 'full_body' | 'portrait';
   suggestedExpression: 'slight_smile' | 'concentration' | 'neutral';
   suggestedGlasses: 'on' | 'off' | 'contextual';
   defaultSceneText: string;
 }
-
-// Authentic raster PNG data URLs (valid 8-byte PNG signature: 89 50 4E 47 0D 0A 1A 0A)
-const RASTER_PNG_STREET_OUTFIT =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGPY0cZNEmIY1TCqYfhqAACVmEkQ6aIVXQAAAABJRU5ErkJggg==';
-
-const RASTER_PNG_CAFE_LIFESTYLE =
-  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAFklEQVR4nGOQs+oiCTGMahjVMHw1AAC7R+IB7fUXEAAAAABJRU5ErkJggg==';
 
 export const INSPIRATION_PRESETS: InspirationPreset[] = [
   {
@@ -23,8 +28,9 @@ export const INSPIRATION_PRESETS: InspirationPreset[] = [
     title: 'Casual Street Style en Madrid',
     category: 'Streetwear / Otoño',
     description:
-      'Fotografía callejera inspirada en Pinterest: abrigo sastre color camel cruzado sobre cuello vuelto antracita, pantalones rectos y postura relajada caminando.',
-    imageUrl: RASTER_PNG_STREET_OUTFIT,
+      'Escenario narrativo urbano: abrigo sastre color camel sobre jersey de cuello subido, pantalones rectos y postura relajada caminando.',
+    imageUrl: undefined,
+    hasPhotographicReference: false,
     suggestedShotType: 'half_body',
     suggestedExpression: 'slight_smile',
     suggestedGlasses: 'on',
@@ -36,8 +42,9 @@ export const INSPIRATION_PRESETS: InspirationPreset[] = [
     title: 'Café de Especialidad y Cuaderno',
     category: 'Lifestyle / Interiores',
     description:
-      'Ambiente de cafetería minimalista con luz suave de ventana, mesa de mármol con café latte, cardigan de punto azul marino y camisa oxford clara.',
-    imageUrl: RASTER_PNG_CAFE_LIFESTYLE,
+      'Escenario narrativo interior: ambiente de cafetería minimalista con luz suave de ventana, mesa de mármol, cardigan de punto azul marino y camisa oxford clara.',
+    imageUrl: undefined,
+    hasPhotographicReference: false,
     suggestedShotType: 'half_body',
     suggestedExpression: 'concentration',
     suggestedGlasses: 'on',

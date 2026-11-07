@@ -75,14 +75,14 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
     setSelectedPresetId(preset.id);
     onChangeConfig({
       ...sceneConfig,
-      inspirationImage: preset.imageUrl,
-      inspirationTitle: preset.title,
+      inspirationImage: preset.imageUrl || undefined,
+      inspirationTitle: preset.hasPhotographicReference ? preset.title : undefined,
       shotType: preset.suggestedShotType,
       expression: preset.suggestedExpression,
       glasses: preset.suggestedGlasses,
       sceneDescription: preset.defaultSceneText,
-      clothingMode: 'inspiration',
-      environmentMode: 'inspiration',
+      clothingMode: preset.imageUrl ? 'inspiration' : 'custom',
+      environmentMode: preset.imageUrl ? 'inspiration' : 'custom',
     });
   };
 
@@ -195,7 +195,7 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
             {/* Presets List */}
             <div className="space-y-2 pt-2 border-t border-slate-800/80">
               <span className="text-[11px] font-mono uppercase tracking-wider text-slate-400 block">
-                O seleccione un escenario preestablecido:
+                O seleccione un escenario preestablecido (parámetros narrativos):
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {INSPIRATION_PRESETS.map((preset) => (
@@ -218,7 +218,7 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
                       </strong>
                     </div>
                     <span className="text-[10px] text-slate-400 mt-1">
-                      Cargar look y parámetros
+                      Cargar parámetros narrativos (sin foto)
                     </span>
                   </button>
                 ))}
