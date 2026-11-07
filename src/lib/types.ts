@@ -135,6 +135,19 @@ export type AuditErrorCategory =
   | 'REFERENCE_ATTACHMENT_FAILED'
   | 'UNKNOWN_SERVER_ERROR';
 
+export type GenerationErrorCategory =
+  | 'MISSING_API_KEY'
+  | 'QUOTA_EXCEEDED'
+  | 'MODEL_UNAVAILABLE'
+  | 'INVALID_MODEL'
+  | 'AUTH_FAILURE'
+  | 'NETWORK_FAILURE'
+  | 'UNEXPECTED_RESPONSE'
+  | 'NO_IMAGE_RETURNED'
+  | 'UNSUPPORTED_FORMAT'
+  | 'INVALID_IMAGE_BYTES'
+  | 'MISSING_MANDATORY_REFERENCE';
+
 export interface ServerAuditExecutionMetadata {
   executionStatus: AuditExecutionStatus;
   modelIdentifier?: string;
@@ -183,4 +196,9 @@ export interface ProductionResult {
   generationDurationMs?: number;
   modelUsed?: string;
   quotaNotice?: string;
+  generationError?: {
+    category: GenerationErrorCategory | string;
+    message: string;
+    httpStatus?: number;
+  };
 }

@@ -124,7 +124,13 @@ export default function App() {
 
       let generatedImageUrl: string | undefined = undefined;
       let modelUsed = 'Prompt Engine v0.2';
-      let quotaNotice: string | undefined = undefined;
+      let generationError:
+        | {
+            category: string;
+            message: string;
+            httpStatus?: number;
+          }
+        | undefined = undefined;
 
       // Step 4: Image Generation (if GENERATE mode)
       if (mode === 'GENERATE') {
@@ -146,14 +152,25 @@ export default function App() {
             }),
           });
 
-          if (genRes.ok) {
-            const genData = await genRes.json();
+          const genData = await genRes.json().catch(() => ({}));
+          if (genRes.ok && genData.status === 'SUCCESS' && genData.imageUrl) {
             generatedImageUrl = genData.imageUrl;
             modelUsed = genData.modelUsed || 'gemini-3.1-flash-lite-image';
-            quotaNotice = genData.quotaNotice;
+          } else {
+            generatedImageUrl = undefined;
+            generationError = {
+              category: genData.errorCategory || (genRes.status === 429 ? 'QUOTA_EXCEEDED' : 'UNEXPECTED_RESPONSE'),
+              message: genData.error || `Error ${genRes.status}: El modelo no produjo una imagen ráster válida.`,
+              httpStatus: genRes.status,
+            };
           }
-        } catch (genErr) {
-          console.warn('Error en /api/generate-candidate:', genErr);
+        } catch (genErr: any) {
+          generatedImageUrl = undefined;
+          generationError = {
+            category: 'NETWORK_FAILURE',
+            message: 'Error de red al conectar con el servicio de generación: ' + (genErr?.message || genErr),
+            httpStatus: 504,
+          };
         }
       }
 
@@ -223,8 +240,8 @@ export default function App() {
         productionPrompt: promptData,
         generatedImageUrl,
         continuityAudit: auditReport,
-        modelUsed,
-        quotaNotice,
+        modelUsed: generatedImageUrl ? modelUsed : 'Sin candidato generado',
+        generationError,
       };
 
       setProductionResult(finalResult);
@@ -297,6 +314,7 @@ export default function App() {
             onReviseScene={() => setActiveTab('director')}
             onPrepareCorrectedPrompt={handlePrepareCorrectedPrompt}
             onNewProduction={handleNewProduction}
+            onRetryGenerate={() => handleExecute('GENERATE')}
           />
         )}
       </main>

@@ -13,7 +13,7 @@ import {
   Camera,
   Shirt,
   Scissors,
-} from 'lucide-react';
+} from './Icons';
 
 interface IdentityGuardViewProps {
   guardReport: IdentityGuardReport | null;

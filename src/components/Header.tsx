@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShieldCheck, Sparkles, Layers, Sliders, Eye, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, Sparkles, Layers, Sliders, Eye, AlertTriangle } from './Icons';
 import { CanonicalAsset } from '../lib/types';
 
 interface HeaderProps {

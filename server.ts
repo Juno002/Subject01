@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
 import { validateModelAuditResponse } from './src/lib/auditModelSchema';
+import { executeCandidateGeneration } from './src/lib/generationService';
+import { validateBase64Image } from './src/lib/rasterValidation';
 
 dotenv.config();
 
@@ -29,6 +31,28 @@ if (apiKey) {
   });
 }
 
+function getCanonicalAssetBuffer(assetId: string): Buffer | null {
+  const assetMap: Record<string, string> = {
+    '01_FACE_MASTER': 'public/assets/aistudio/Hoja_de_referencia_del_personaje_01_4479e60c.png',
+    '02_BODY_MASTER': 'public/assets/aistudio/Master_sheet_847b0873.png',
+    '03_ACCESSORIES_MASTER': 'public/assets/aistudio/Infograf_a_de_accesorios_minimalista_a072bf03.png',
+    '04_EXPRESSIONS_MASTER': 'public/assets/aistudio/Tabla_de_expresiones__Sujeto_01_60d2f7c4.png',
+  };
+  const relPath = assetMap[assetId];
+  if (!relPath) return null;
+  const candidates = [
+    path.resolve(relPath),
+    path.resolve(__dirname, relPath),
+    path.resolve(__dirname, '..', relPath),
+  ];
+  for (const p of candidates) {
+    if (fs.existsSync(p)) {
+      return fs.readFileSync(p);
+    }
+  }
+  return null;
+}
+
 // 1. Inspiration Analyzer Endpoint
 app.post('/api/analyze-inspiration', async (req, res) => {
   try {
@@ -38,10 +62,18 @@ app.post('/api/analyze-inspiration', async (req, res) => {
       return res.status(400).json({ error: 'Falta la imagen de inspiración en base64.' });
     }
 
-    const isSvg = imageBase64.includes('svg+xml');
+    const validation = validateBase64Image(imageBase64, mimeType);
+    if (!validation.isValid) {
+      return res.status(400).json({
+        error:
+          'Formato no soportado. SUBJECT 01 sólo admite imágenes ráster auténticas PNG o JPEG: ' +
+          (validation.errorMessage || 'Formato inválido'),
+      });
+    }
+
     const cleanBase64 = imageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
 
-    if (ai && !isSvg) {
+    if (ai) {
       try {
         const prompt = `Analiza detalladamente esta fotografía de inspiración (por ejemplo un outfit o pose de Pinterest) para una producción fotográfica cinematográfica de un personaje ficticio llamado Diego Navarro.
 Contexto adicional del usuario: "${sceneContext}".
@@ -167,303 +199,26 @@ Responde estrictamente en formato JSON con la siguiente estructura en español:
   }
 });
 
-// 2. Candidate Image Generation Endpoint
+// 2. Candidate Image Generation Endpoint (Authentic Raster-Only: PNG or JPEG)
 app.post('/api/generate-candidate', async (req, res) => {
   try {
-    const {
-      productionPrompt,
-      aspectRatio = '1:1',
-      faceMasterBase64,
-      clothingColor = '#996515',
-      shotType = 'half_body',
-      glasses = 'on',
-      sceneDescription = '',
-      expression = 'slight_smile',
-    } = req.body;
-
-    let quotaNotice: string | undefined = undefined;
-
-    if (!productionPrompt) {
-      return res.status(400).json({ error: 'Falta el prompt de producción.' });
-    }
-
-    // Aspect ratio translation for image generation model
-    // Supported in gemini-3.1-flash-lite-image: "1:1", "3:4", "4:3", "9:16", "16:9"
-    let targetRatio: '1:1' | '3:4' | '4:3' | '9:16' | '16:9' = '1:1';
-    if (aspectRatio === '4:5' || aspectRatio === '3:4') targetRatio = '3:4';
-    else if (aspectRatio === '9:16') targetRatio = '9:16';
-    else if (aspectRatio === '16:9') targetRatio = '16:9';
-
-    if (ai) {
-      try {
-        const parts: any[] = [];
-
-        // 1. Always supply official 01_FACE_MASTER image directly into the model!
-        const faceMasterPath = path.resolve('public/assets/aistudio/Hoja_de_referencia_del_personaje_01_4479e60c.png');
-        if (fs.existsSync(faceMasterPath)) {
-          const faceBuffer = fs.readFileSync(faceMasterPath);
-          parts.push({
-            inlineData: {
-              mimeType: 'image/png',
-              data: faceBuffer.toString('base64'),
-            },
-          });
-        } else if (faceMasterBase64 && faceMasterBase64.startsWith('data:image') && !faceMasterBase64.includes('svg+xml')) {
-          const cleanFace = faceMasterBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
-          parts.push({
-            inlineData: {
-              mimeType: 'image/png',
-              data: cleanFace,
-            },
-          });
-        }
-
-        // 2. Supply 03_ACCESSORIES_MASTER when glasses are requested
-        if (glasses !== 'off') {
-          const accPath = path.resolve('public/assets/aistudio/Infograf_a_de_accesorios_minimalista_a072bf03.png');
-          if (fs.existsSync(accPath)) {
-            parts.push({
-              inlineData: {
-                mimeType: 'image/png',
-                data: fs.readFileSync(accPath).toString('base64'),
-              },
-            });
-          }
-        }
-
-        // 3. Supply 04_EXPRESSIONS_MASTER for expression alignment
-        const expPath = path.resolve('public/assets/aistudio/Tabla_de_expresiones__Sujeto_01_60d2f7c4.png');
-        if (fs.existsSync(expPath)) {
-          parts.push({
-            inlineData: {
-              mimeType: 'image/png',
-              data: fs.readFileSync(expPath).toString('base64'),
-            },
-          });
-        }
-
-        parts.push({
-          text: `CRITICAL IDENTITY INSTRUCTION FOR DIEGO NAVARRO (SUBJECT 01):
-The primary subject in the generated image MUST be the EXACT SAME MAN shown in the attached "CHARACTER REFERENCE SHEET: SUBJECT 01" (first image).
-- His face, facial structure, skin tone, eye shape, nose, and mouth MUST 100% match Diego Navarro.
-- Hair: Short dark brown naturally curly hair with distinct curly ringlets/texture on top, shorter trimmed sides.
-- Facial hair: Neat, dense trimmed 3-day stubble beard and mustache connecting naturally along the jawline.
-- Eyes: Almond-shaped warm dark brown eyes with calm, confident, friendly gaze.
-- Skin: Mediterranean warm olive-tan complexion with natural authentic skin pores and realism.
-- ${glasses === 'off' ? 'NO glasses worn. Face completely bare.' : 'Wearing the exact round silver metallic wireframe glasses shown in the ACCESSORIES reference sheet.'}
-- Believable casual smartphone camera realism, NO plastic smoothing, NO AI glaze, NO facial alterations.
-
-PRODUCTION DIRECTIVES:
-${productionPrompt}`,
-        });
-
-        const imageResponse = await ai.models.generateContent({
-          model: 'gemini-3.1-flash-lite-image',
-          contents: { parts },
-          config: {
-            imageConfig: {
-              aspectRatio: targetRatio,
-            },
-          },
-        });
-
-        for (const part of imageResponse.candidates?.[0]?.content?.parts ?? []) {
-          if (part.inlineData?.data) {
-            const mime = part.inlineData.mimeType ?? 'image/png';
-            const imageUrl = `data:${mime};base64,${part.inlineData.data}`;
-            return res.json({
-              imageUrl,
-              modelUsed: 'gemini-3.1-flash-lite-image (con anclaje multimodal canónico)',
-              aspectRatio: targetRatio,
-            });
-          }
-        }
-      } catch (geminiError: any) {
-        const errorMsg = geminiError?.message || String(geminiError);
-        const isQuota429 = errorMsg.includes('429') || errorMsg.includes('quota') || geminiError?.status === 'RESOURCE_EXHAUSTED';
-        if (isQuota429) {
-          quotaNotice =
-            'Límite de cuota del modelo de imagen alcanzado en el nivel gratuito (429 RESOURCE_EXHAUSTED). Se activó el Compositor Canónico Oficial de alta resolución con las referencias maestras de Diego Navarro. Para generar mediante Gemini directamente, active una clave con facturación en Settings > Secrets.';
-        } else {
-          quotaNotice = 'Modo de contingencia activo: Generando candidato compuesto con el Face Master oficial de Diego Navarro.';
-        }
-      }
-    }
-
-    // High fidelity photographic composite candidate generation:
-    // Uses the EXACT official canonical photographic face of Diego Navarro
-    const proceduralCandidate = generateHighFidelityCandidateSvg({
-      shotType,
-      expression,
-      glasses,
-      clothingColor,
-      sceneDescription,
-      aspectRatio,
+    const result = await executeCandidateGeneration(req.body, {
+      aiClient: ai,
+      getCanonicalAssetBuffer,
     });
-
-    return res.json({
-      imageUrl: proceduralCandidate,
-      modelUsed: quotaNotice
-        ? 'Compositor Canónico Oficial v0.2 (01_FACE_MASTER)'
-        : 'Compositor Canónico Oficial v0.2',
-      aspectRatio,
-      quotaNotice,
-    });
+    return res.status(result.httpStatus).json(result);
   } catch (error: any) {
     console.error('Error in /api/generate-candidate:', error?.message || error);
     return res.status(500).json({
-      error: 'Error en generación de imagen: ' + (error?.message || error),
+      success: false,
+      status: 'FAILED',
+      errorCategory: 'UNEXPECTED_RESPONSE',
+      error: 'Error en servicio de generación de imagen: ' + (error?.message || error),
     });
   }
 });
 
-// Helper to generate a crisp, photorealistic photographic candidate using Diego's official face sheets
-function generateHighFidelityCandidateSvg(opts: {
-  shotType: string;
-  expression?: string;
-  glasses: string;
-  clothingColor: string;
-  sceneDescription: string;
-  aspectRatio: string;
-}) {
-  const isGlasses = opts.glasses !== 'off';
-  const width = 800;
-  let height = 800;
-  if (opts.aspectRatio === '4:5') height = 1000;
-  else if (opts.aspectRatio === '9:16') height = 1422;
-  else if (opts.aspectRatio === '16:9') height = 450;
 
-  // Face coordinate mapping in Tabla_de_expresiones__Sujeto_01_60d2f7c4.png (1217 x 1293)
-  const expressionCoords: Record<string, { x: number; y: number }> = {
-    neutral: { x: 205, y: 350 },
-    slight_smile: { x: 608, y: 350 },
-    concentration: { x: 1010, y: 350 },
-    soft_surprise: { x: 205, y: 975 },
-    mid_speech: { x: 608, y: 975 },
-    tired: { x: 1010, y: 975 },
-  };
-
-  const exprKey = opts.expression || 'slight_smile';
-  const targetCoords = expressionCoords[exprKey] || expressionCoords['slight_smile'];
-  const faceCenterX = width / 2;
-  const faceCenterY = height * 0.35;
-  const scale = 0.96;
-  const imgW = 1217 * scale;
-  const imgH = 1293 * scale;
-  const imgX = faceCenterX - targetCoords.x * scale;
-  const imgY = faceCenterY - targetCoords.y * scale;
-
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} ${height}" width="100%" height="100%">
-    <defs>
-      <linearGradient id="skyAtmosphere" x1="0%" y1="0%" x2="0%" y2="100%">
-        <stop offset="0%" stop-color="#141B26"/>
-        <stop offset="50%" stop-color="#1E2838"/>
-        <stop offset="100%" stop-color="#111722"/>
-      </linearGradient>
-      <linearGradient id="coatMaterial" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stop-color="#C58F6B"/>
-        <stop offset="50%" stop-color="#9C6B46"/>
-        <stop offset="100%" stop-color="#6F4628"/>
-      </linearGradient>
-      <!-- Circular/oval mask for Diego's authentic photographic face -->
-      <clipPath id="diegoPhotoHead">
-        <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180"/>
-      </clipPath>
-      <radialGradient id="vignetteFade" cx="50%" cy="50%" r="50%">
-        <stop offset="70%" stop-color="#000" stop-opacity="0"/>
-        <stop offset="100%" stop-color="#000" stop-opacity="0.35"/>
-      </radialGradient>
-    </defs>
-
-    <!-- Background: Urban Architecture & Street Atmosphere -->
-    <rect width="${width}" height="${height}" fill="url(#skyAtmosphere)"/>
-    
-    <!-- Architectural background perspective & warm bokeh -->
-    <g opacity="0.35">
-      <rect x="50" y="80" width="190" height="${height - 100}" fill="#0F172A" rx="4"/>
-      <rect x="80" y="140" width="45" height="70" fill="#F59E0B" opacity="0.25"/>
-      <rect x="155" y="140" width="45" height="70" fill="#F59E0B" opacity="0.2"/>
-      <rect x="80" y="240" width="45" height="70" fill="#F59E0B" opacity="0.15"/>
-      <rect x="155" y="240" width="45" height="70" fill="#F59E0B" opacity="0.2"/>
-      <line x1="0" y1="${height * 0.72}" x2="${width}" y2="${height * 0.72}" stroke="#334155" stroke-width="2"/>
-    </g>
-
-    <!-- Warm street lamp bokeh -->
-    <circle cx="680" cy="220" r="150" fill="#F59E0B" opacity="0.09"/>
-    <circle cx="120" cy="340" r="100" fill="#38BDF8" opacity="0.06"/>
-
-    <!-- Wardrobe / Overcoat & Mockneck Knit (Surrounding Body) -->
-    <g id="diegoWardrobe" transform="translate(${faceCenterX}, ${faceCenterY})">
-      <!-- Torso / Overcoat -->
-      <path d="M -210 180 Q -120 40 0 40 Q 120 40 210 180 L 250 ${height * 0.65} L -250 ${height * 0.65} Z" fill="url(#coatMaterial)"/>
-      <polygon points="-75,55 0,165 -45,55" fill="#58351B"/>
-      <polygon points="75,55 0,165 45,55" fill="#58351B"/>
-      <!-- Inner Charcoal Mockneck -->
-      <polygon points="-52,38 52,38 40,110 -40,110" fill="#1C1E24"/>
-      <!-- Neck shadow -->
-      <ellipse cx="0" cy="55" rx="50" ry="18" fill="#000000" opacity="0.3"/>
-    </g>
-
-    <!-- REAL CANONICAL PHOTOGRAPHIC FACE OF DIEGO NAVARRO -->
-    <!-- Sourced directly from Tabla_de_expresiones__Sujeto_01_60d2f7c4.png (04_EXPRESSIONS / 01_FACE_MASTER) -->
-    <g id="diegoPhotoFace">
-      <image
-        href="/assets/aistudio/Tabla_de_expresiones__Sujeto_01_60d2f7c4.png"
-        x="${imgX}"
-        y="${imgY}"
-        width="${imgW}"
-        height="${imgH}"
-        clip-path="url(#diegoPhotoHead)"
-        preserveAspectRatio="none"
-      />
-      <!-- Soft border blend -->
-      <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180" fill="url(#vignetteFade)"/>
-      <ellipse cx="${faceCenterX}" cy="${faceCenterY}" rx="148" ry="180" fill="none" stroke="#2A384C" stroke-width="2" opacity="0.4"/>
-    </g>
-
-    <!-- Canonical Accessories: Round Metallic Glasses (if enabled) -->
-    ${
-      isGlasses
-        ? `
-    <g id="canonicalGlasses" stroke="#D1D5DB" stroke-linecap="round" stroke-linejoin="round">
-      <!-- Left Lens Rim -->
-      <circle cx="${faceCenterX - 35}" cy="${faceCenterY - 14}" r="27" fill="none" stroke-width="2.6"/>
-      <circle cx="${faceCenterX - 35}" cy="${faceCenterY - 14}" r="26" fill="#38BDF8" opacity="0.07"/>
-      <!-- Right Lens Rim -->
-      <circle cx="${faceCenterX + 35}" cy="${faceCenterY - 14}" r="27" fill="none" stroke-width="2.6"/>
-      <circle cx="${faceCenterX + 35}" cy="${faceCenterY - 14}" r="26" fill="#38BDF8" opacity="0.07"/>
-      <!-- Curved Bridge -->
-      <path d="M ${faceCenterX - 8} ${faceCenterY - 16} Q ${faceCenterX} ${faceCenterY - 22} ${faceCenterX + 8} ${faceCenterY - 16}" stroke-width="2.6" fill="none"/>
-      <!-- Temples -->
-      <line x1="${faceCenterX - 62}" y1="${faceCenterY - 16}" x2="${faceCenterX - 95}" y2="${faceCenterY - 12}" stroke-width="2.2"/>
-      <line x1="${faceCenterX + 62}" y1="${faceCenterY - 16}" x2="${faceCenterX + 95}" y2="${faceCenterY - 12}" stroke-width="2.2"/>
-    </g>
-    `
-        : ''
-    }
-
-    <!-- Top Watermark & HUD Audit Notice -->
-    <g transform="translate(24, 28)">
-      <rect width="400" height="34" rx="6" fill="#090D14" fill-opacity="0.88" stroke="#334155" stroke-width="1"/>
-      <circle cx="18" cy="17" r="4" fill="#38BDF8"/>
-      <text x="32" y="21" fill="#E2E8F0" font-family="monospace" font-size="11" font-weight="bold">CANDIDATO #01 // ANCLAJE 01_FACE_MASTER</text>
-    </g>
-
-    <g transform="translate(${width - 320}, 28)">
-      <rect width="296" height="34" rx="6" fill="#090D14" fill-opacity="0.88" stroke="#38BDF8" stroke-width="1"/>
-      <text x="148" y="21" fill="#BAE6FD" font-family="monospace" font-size="10" text-anchor="middle" font-weight="bold">FISONOMÍA 100% CANÓNICA VERIFICADA</text>
-    </g>
-
-    <!-- Bottom Metadata Bar -->
-    <g transform="translate(24, ${height - 54})">
-      <rect width="${width - 48}" height="36" rx="6" fill="#090D14" fill-opacity="0.9" stroke="#1E293B" stroke-width="1"/>
-      <text x="16" y="23" fill="#94A3B8" font-family="monospace" font-size="10">SUBJECT: DIEGO NAVARRO (32) • EXPRESIÓN: ${exprKey.toUpperCase()} • RATIO: ${opts.aspectRatio}</text>
-      <text x="${width - 64}" y="23" fill="#38BDF8" font-family="monospace" font-size="10" text-anchor="end">SUBJECT 01 v0.2</text>
-    </g>
-  </svg>`;
-
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
 
 // 3. Continuity Auditor Endpoint
 app.post('/api/audit-candidate', async (req, res) => {
@@ -492,7 +247,27 @@ app.post('/api/audit-candidate', async (req, res) => {
       });
     }
 
-    if (ai && !candidateImageBase64.includes('svg+xml')) {
+    const candidateValidation = validateBase64Image(candidateImageBase64);
+    if (!candidateValidation.isValid) {
+      return res.status(400).json({
+        error: candidateValidation.errorMessage || 'Formato de imagen no soportado para auditoría.',
+        auditStatus: 'UNSUPPORTED_FORMAT',
+        executionMetadata: {
+          executionStatus: 'UNSUPPORTED_FORMAT',
+          candidateImageAttached: false,
+          attachedReferences: [],
+          evaluatedCriteria: [],
+          validStructuredDataReturned: false,
+          errorCategory: 'UNSUPPORTED_IMAGE_FORMAT',
+          errorMessage:
+            candidateValidation.errorMessage ||
+            'La imagen candidata no es un archivo ráster PNG o JPEG válido.',
+          timestamp: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (ai) {
       const attachedReferences: string[] = [];
       try {
         const parts: any[] = [];
@@ -562,13 +337,14 @@ app.post('/api/audit-candidate', async (req, res) => {
         }
 
         // Attach Candidate Image to audit
+        const candidateMime = candidateValidation.mimeType || 'image/png';
         const cleanCandidate = candidateImageBase64.replace(/^data:image\/[a-zA-Z+]+;base64,/, '');
         parts.push({
-          text: 'CANDIDATE IMAGE UNDER PRODUCTION AUDIT: Image generated to evaluate against attached canonical references.',
+          text: `CANDIDATE IMAGE UNDER PRODUCTION AUDIT: Image generated to evaluate against attached canonical references. Verified Format: ${candidateMime}.`,
         });
         parts.push({
           inlineData: {
-            mimeType: 'image/png',
+            mimeType: candidateMime,
             data: cleanCandidate,
           },
         });
@@ -720,9 +496,12 @@ Evaluate each criterion strictly. Respond with a valid JSON object matching this
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';
   if (isProd) {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
+    const distPath = fs.existsSync(path.resolve(__dirname, 'index.html'))
+      ? __dirname
+      : path.resolve(__dirname, 'dist');
+    app.use(express.static(distPath));
     app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist/index.html'));
+      res.sendFile(path.resolve(distPath, 'index.html'));
     });
   } else {
     const vite = await createViteServer({

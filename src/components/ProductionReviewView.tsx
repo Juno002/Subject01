@@ -19,13 +19,14 @@ import {
   AlertOctagon,
   Camera,
   AlertCircle,
-} from 'lucide-react';
+} from './Icons';
 
 interface ProductionReviewViewProps {
   productionResult: ProductionResult | null;
   onReviseScene: () => void;
   onPrepareCorrectedPrompt: () => void;
   onNewProduction: () => void;
+  onRetryGenerate?: () => void;
 }
 
 export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
@@ -33,6 +34,7 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
   onReviseScene,
   onPrepareCorrectedPrompt,
   onNewProduction,
+  onRetryGenerate,
 }) => {
   const [copiedPrompt, setCopiedPrompt] = useState(false);
   const [isPromptExpanded, setIsPromptExpanded] = useState(false);
@@ -65,7 +67,7 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
     identityGuardReport,
     executionMode,
     modelUsed,
-    quotaNotice,
+    generationError,
   } = productionResult;
 
   const handleCopyPrompt = () => {
@@ -76,9 +78,13 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
 
   const handleDownloadImage = () => {
     if (!generatedImageUrl) return;
+    const isJpeg =
+      generatedImageUrl.startsWith('data:image/jpeg') ||
+      generatedImageUrl.startsWith('data:image/jpg');
+    const ext = isJpeg ? 'jpg' : 'png';
     const link = document.createElement('a');
     link.href = generatedImageUrl;
-    link.download = `DiegoNavarro_Candidate_${Date.now()}.png`;
+    link.download = `DiegoNavarro_Candidate_${Date.now()}.${ext}`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -175,13 +181,24 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
               </span>
             </div>
 
-            {quotaNotice && (
-              <div className="mx-4 p-3 rounded-lg bg-sky-950/40 border border-sky-800/60 text-sky-200 text-xs flex items-start gap-2.5">
-                <AlertCircle className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <p className="font-semibold text-sky-300">Modo de Anclaje Canónico Oficial Activo</p>
-                  <p className="text-[11px] text-slate-300 leading-relaxed">{quotaNotice}</p>
+            {generationError && (
+              <div className="mx-4 p-4 rounded-lg bg-rose-950/40 border border-rose-800/80 text-rose-200 text-xs space-y-2">
+                <div className="flex items-center gap-2 text-rose-400 font-mono font-bold text-xs uppercase">
+                  <AlertOctagon className="w-4 h-4" />
+                  <span>Fallo en Generación de Imagen // {generationError.category}</span>
                 </div>
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  {generationError.message}
+                </p>
+                {onRetryGenerate && (
+                  <button
+                    onClick={onRetryGenerate}
+                    className="mt-1 px-3 py-1.5 rounded bg-rose-900/60 hover:bg-rose-800/60 text-rose-200 text-xs font-mono font-medium border border-rose-700 transition-colors inline-flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reintentar Generación Manual</span>
+                  </button>
+                )}
               </div>
             )}
 
@@ -203,6 +220,29 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
                     </button>
                   </div>
                 </div>
+              ) : generationError ? (
+                <div className="p-8 border border-dashed border-rose-900/60 rounded-lg text-center space-y-3 bg-[#0E0B11]">
+                  <div className="w-10 h-10 rounded-full bg-rose-950/80 border border-rose-800/80 flex items-center justify-center mx-auto text-rose-400 font-mono font-bold">
+                    ✕
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs font-semibold text-rose-300">
+                      No se produjo ningún candidato fotográfico
+                    </p>
+                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                      La generación no produjo una imagen ráster auténtica válida. No se generó ningún candidato sintético o simulado.
+                    </p>
+                  </div>
+                  {onRetryGenerate && (
+                    <button
+                      onClick={onRetryGenerate}
+                      className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-mono font-medium border border-slate-700 inline-flex items-center gap-1.5 transition-colors cursor-pointer"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-cyan-400" />
+                      <span>Reintentar Generación</span>
+                    </button>
+                  )}
+                </div>
               ) : (
                 <div className="p-8 border border-dashed border-slate-800 rounded-lg text-center space-y-2 bg-[#090D14]">
                   <p className="text-xs text-slate-400">
@@ -213,7 +253,7 @@ export const ProductionReviewView: React.FC<ProductionReviewViewProps> = ({
                   </p>
                   <button
                     onClick={onReviseScene}
-                    className="mt-2 text-xs font-mono text-cyan-400 hover:underline"
+                    className="mt-2 text-xs font-mono text-cyan-400 hover:underline cursor-pointer"
                   >
                     Cambiar a modo GENERAR en Director de Escena →
                   </button>

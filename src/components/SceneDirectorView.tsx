@@ -21,7 +21,7 @@ import {
   FileText,
   AlertCircle,
   RotateCcw,
-} from 'lucide-react';
+} from './Icons';
 
 interface SceneDirectorViewProps {
   sceneConfig: SceneConfig;
@@ -51,10 +51,15 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    if (file.type === 'image/svg+xml' || file.name.toLowerCase().endsWith('.svg')) {
+      console.warn('Formato SVG rechazado. SUBJECT 01 sólo admite imágenes ráster PNG o JPEG.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      if (dataUrl) {
+      if (dataUrl && !dataUrl.includes('image/svg+xml')) {
         onChangeConfig({
           ...sceneConfig,
           inspirationImage: dataUrl,
@@ -156,7 +161,7 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
                     Cambiar Fotografía
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/png,image/jpeg"
                       onChange={handleInspirationUpload}
                       className="hidden"
                     />
@@ -176,11 +181,11 @@ export const SceneDirectorView: React.FC<SceneDirectorViewProps> = ({
                   Subir foto de Pinterest, lookbook o pose
                 </span>
                 <span className="text-[11px] text-slate-500 mt-1">
-                  JPG, PNG o WebP (Se aislará el estilo, descartando la identidad)
+                  PNG o JPEG (Se aislará el estilo, descartando la identidad)
                 </span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg"
                   onChange={handleInspirationUpload}
                   className="hidden"
                 />

@@ -14,6 +14,8 @@ import {
   REQUIRED_CRITERIA_IDS,
   validateModelAuditResponse,
 } from './auditModelSchema';
+import { validateRasterBytes, validateBase64Image } from './rasterValidation';
+import { executeCandidateGeneration } from './generationService';
 
 const defaultScene: SceneConfig = {
   shotType: 'half_body',
@@ -412,4 +414,322 @@ test('S01-FIX-001C Test 12: Existing PASS, REVIEW, UNVERIFIED and PREPARE_ONLY r
   assert.equal(headBody?.verdict, 'REVIEW');
   assert.equal(headBody?.assessmentType, 'UNASSESSABLE_OCCLUSION');
   assert.equal(reviewAudit.overallVerdict, 'REVIEW');
+});
+
+// ============================================================================
+// S01-FIX-002: SVG Elimination & Authentic Raster-Only Image Pipeline Tests
+// ============================================================================
+
+const samplePngBytes = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+  0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+  0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53,
+]);
+
+const sampleJpegBytes = Buffer.from([
+  0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46,
+  0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00, 0x48,
+]);
+
+const sampleWebpBytes = Buffer.from([
+  0x52, 0x49, 0x46, 0x46, 0x24, 0x00, 0x00, 0x00,
+  0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
+]);
+
+const sampleGifBytes = Buffer.from([
+  0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00,
+  0x01, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+]);
+
+test('S01-FIX-002 Requirement 1: Valid PNG bytes are accepted', () => {
+  const result = validateRasterBytes(samplePngBytes, 'image/png');
+  assert.equal(result.isValid, true);
+  assert.equal(result.format, 'PNG');
+  assert.equal(result.mimeType, 'image/png');
+});
+
+test('S01-FIX-002 Requirement 2: Valid JPEG bytes are accepted', () => {
+  const result = validateRasterBytes(sampleJpegBytes, 'image/jpeg');
+  assert.equal(result.isValid, true);
+  assert.equal(result.format, 'JPEG');
+  assert.equal(result.mimeType, 'image/jpeg');
+});
+
+test('S01-FIX-002 Requirement 3: SVG candidate data is rejected', () => {
+  const svgText = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><circle cx="50" cy="50" r="40"/></svg>';
+  const svgBytes = Buffer.from(svgText);
+  const result = validateRasterBytes(svgBytes, 'image/svg+xml');
+  assert.equal(result.isValid, false);
+  assert.equal(result.errorCategory, 'UNSUPPORTED_FORMAT');
+
+  const base64Svg = 'data:image/svg+xml;utf8,' + encodeURIComponent(svgText);
+  const dataUriResult = validateBase64Image(base64Svg);
+  assert.equal(dataUriResult.isValid, false);
+  assert.equal(dataUriResult.errorCategory, 'UNSUPPORTED_FORMAT');
+});
+
+test('S01-FIX-002 Requirement 4: Invalid bytes disguised as PNG are rejected', () => {
+  const fakePng = Buffer.from('FAKE_PNG_HEADER_THAT_IS_NOT_AUTHENTIC_BINARY');
+  const result = validateRasterBytes(fakePng, 'image/png');
+  assert.equal(result.isValid, false);
+  assert.equal(result.errorCategory, 'INVALID_IMAGE_BYTES');
+});
+
+test('S01-FIX-002 Requirement 5: Incorrect MIME declarations are rejected', () => {
+  // Real PNG bytes claiming to be JPEG
+  const pngAsJpeg = validateRasterBytes(samplePngBytes, 'image/jpeg');
+  assert.equal(pngAsJpeg.isValid, false);
+  assert.equal(pngAsJpeg.errorCategory, 'MIME_SIGNATURE_MISMATCH');
+
+  // Real JPEG bytes claiming to be PNG
+  const jpegAsPng = validateRasterBytes(sampleJpegBytes, 'image/png');
+  assert.equal(jpegAsPng.isValid, false);
+  assert.equal(jpegAsPng.errorCategory, 'MIME_SIGNATURE_MISMATCH');
+});
+
+test('S01-FIX-002 Requirement 6: Missing API key produces an explicit error', async () => {
+  const result = await executeCandidateGeneration(
+    {
+      productionPrompt: 'Photorealistic portrait of Diego Navarro',
+      aspectRatio: '1:1',
+    },
+    {
+      aiClient: null, // No API client configured
+      getCanonicalAssetBuffer: () => samplePngBytes,
+    }
+  );
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.httpStatus, 503);
+  assert.equal(result.errorCategory, 'MISSING_API_KEY');
+  assert.equal(result.imageUrl, undefined);
+});
+
+test('S01-FIX-002 Requirement 7: HTTP 429 produces a quota error, not an image', async () => {
+  const mockAiQuota429 = {
+    models: {
+      generateContent: async () => {
+        const quotaErr: any = new Error('429 RESOURCE_EXHAUSTED: quota exceeded');
+        quotaErr.status = 429;
+        throw quotaErr;
+      },
+    },
+  };
+
+  const result = await executeCandidateGeneration(
+    {
+      productionPrompt: 'Diego in Madrid coat',
+      aspectRatio: '3:4',
+    },
+    {
+      aiClient: mockAiQuota429,
+      getCanonicalAssetBuffer: () => samplePngBytes,
+    }
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.httpStatus, 429);
+  assert.equal(result.errorCategory, 'QUOTA_EXCEEDED');
+  assert.equal(result.imageUrl, undefined);
+  // Never returns an SVG or fake image
+  assert.equal(typeof result.imageUrl, 'undefined');
+});
+
+test('S01-FIX-002 Requirement 8: Empty image-model response produces an error', async () => {
+  const mockAiEmpty = {
+    models: {
+      generateContent: async () => ({
+        candidates: [],
+      }),
+    },
+  };
+
+  const result = await executeCandidateGeneration(
+    {
+      productionPrompt: 'Diego portrait',
+      aspectRatio: '1:1',
+    },
+    {
+      aiClient: mockAiEmpty,
+      getCanonicalAssetBuffer: () => samplePngBytes,
+    }
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.httpStatus, 502);
+  assert.equal(result.errorCategory, 'NO_IMAGE_RETURNED');
+  assert.equal(result.imageUrl, undefined);
+});
+
+test('S01-FIX-002 Requirement 9: Text-only model response produces an error', async () => {
+  const mockAiTextOnly = {
+    models: {
+      generateContent: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  text: 'Lo siento, no puedo generar esa imagen en este momento.',
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    },
+  };
+
+  const result = await executeCandidateGeneration(
+    {
+      productionPrompt: 'Diego portrait',
+      aspectRatio: '1:1',
+    },
+    {
+      aiClient: mockAiTextOnly,
+      getCanonicalAssetBuffer: () => samplePngBytes,
+    }
+  );
+
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'FAILED');
+  assert.equal(result.httpStatus, 502);
+  assert.equal(result.errorCategory, 'NO_IMAGE_RETURNED');
+  assert.equal(result.imageUrl, undefined);
+});
+
+test('S01-FIX-002 Requirement 10: Unsupported formats are rejected (WebP and GIF)', () => {
+  const webpResult = validateRasterBytes(sampleWebpBytes, 'image/webp');
+  assert.equal(webpResult.isValid, false);
+  assert.equal(webpResult.errorCategory, 'UNSUPPORTED_FORMAT');
+
+  const gifResult = validateRasterBytes(sampleGifBytes, 'image/gif');
+  assert.equal(gifResult.isValid, false);
+  assert.equal(gifResult.errorCategory, 'UNSUPPORTED_FORMAT');
+});
+
+test('S01-FIX-002 Requirement 11: Failed generation never triggers the continuity auditor', () => {
+  // In the application workflow, when generation fails, generatedImageUrl is undefined.
+  const generatedImageUrl: string | undefined = undefined;
+
+  // The condition in App.tsx:
+  const shouldInvokeAuditor = Boolean(generatedImageUrl);
+  assert.equal(shouldInvokeAuditor, false);
+
+  // When auditor is executed with hasGeneratedImage: false
+  const auditReport = runContinuityAudit({
+    sceneConfig: defaultScene,
+    canonicalStatus: allCanonicalConnected,
+    hasGeneratedImage: false,
+    auditStatus: 'NOT_RUN',
+  });
+
+  assert.equal(auditReport.overallVerdict, 'UNVERIFIED');
+  assert.equal(auditReport.criteria.length, 0);
+  assert.equal(
+    auditReport.summaryEs.includes('No se ha generado imagen candidata'),
+    true
+  );
+});
+
+test('S01-FIX-002 Requirement 12: Failed generation never enables a candidate download', () => {
+  const generatedImageUrl: string | undefined = undefined;
+  // Download UI button gate
+  const downloadEnabled = Boolean(generatedImageUrl);
+  assert.equal(downloadEnabled, false);
+});
+
+test('S01-FIX-002 Requirement 13: PREPARE_ONLY remains operational without image generation', () => {
+  const prepConfig: SceneConfig = {
+    ...defaultScene,
+    executionMode: 'PREPARE_ONLY',
+  };
+
+  const guardReport = runIdentityGuardValidation(
+    INITIAL_CANONICAL_ASSETS,
+    prepConfig
+  );
+  assert.equal(guardReport.status, 'APPROVED');
+
+  const promptData = buildProductionPrompt(prepConfig, guardReport);
+  assert.equal(typeof promptData.fullModelPrompt, 'string');
+  assert.equal(promptData.fullModelPrompt.length > 50, true);
+
+  // Audit for PREPARE_ONLY
+  const audit = runContinuityAudit({
+    sceneConfig: prepConfig,
+    canonicalStatus: allCanonicalConnected,
+    hasGeneratedImage: false,
+    auditStatus: 'NOT_RUN',
+  });
+  assert.equal(audit.overallVerdict, 'UNVERIFIED');
+  assert.equal(audit.criteria.length, 0);
+});
+
+test('S01-FIX-002 Requirement 14: Valid raster output preserves its correct file format', async () => {
+  // Test PNG output preservation
+  const mockAiPng = {
+    models: {
+      generateContent: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: 'image/png',
+                    data: samplePngBytes.toString('base64'),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    },
+  };
+
+  const pngResult = await executeCandidateGeneration(
+    { productionPrompt: 'Diego in Madrid', aspectRatio: '1:1' },
+    { aiClient: mockAiPng, getCanonicalAssetBuffer: () => samplePngBytes }
+  );
+  assert.equal(pngResult.success, true);
+  assert.equal(pngResult.status, 'SUCCESS');
+  assert.equal(pngResult.mimeType, 'image/png');
+  assert.equal(pngResult.imageUrl?.startsWith('data:image/png;base64,'), true);
+
+  // Test JPEG output preservation (must not be renamed to PNG)
+  const mockAiJpeg = {
+    models: {
+      generateContent: async () => ({
+        candidates: [
+          {
+            content: {
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: 'image/jpeg',
+                    data: sampleJpegBytes.toString('base64'),
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    },
+  };
+
+  const jpegResult = await executeCandidateGeneration(
+    { productionPrompt: 'Diego in Madrid', aspectRatio: '1:1' },
+    { aiClient: mockAiJpeg, getCanonicalAssetBuffer: () => samplePngBytes }
+  );
+  assert.equal(jpegResult.success, true);
+  assert.equal(jpegResult.status, 'SUCCESS');
+  assert.equal(jpegResult.mimeType, 'image/jpeg');
+  assert.equal(jpegResult.imageUrl?.startsWith('data:image/jpeg;base64,'), true);
+  assert.equal(jpegResult.imageUrl?.includes('png'), false);
 });

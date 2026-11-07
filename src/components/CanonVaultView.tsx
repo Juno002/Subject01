@@ -10,7 +10,7 @@ import {
   AlertOctagon,
   Sparkles,
   Info,
-} from 'lucide-react';
+} from './Icons';
 
 interface CanonVaultViewProps {
   canonicalAssets: CanonicalAsset[];
@@ -32,10 +32,16 @@ export const CanonVaultView: React.FC<CanonVaultViewProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Enforce canonical reference format: PNG only
+    if (file.type && file.type !== 'image/png') {
+      console.warn('Solo se admiten referencias canónicas en formato PNG.');
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const dataUrl = event.target?.result as string;
-      if (dataUrl) {
+      if (dataUrl && dataUrl.startsWith('data:image/png')) {
         onUpdateAssetImage(assetId, dataUrl);
       }
     };
@@ -147,7 +153,7 @@ export const CanonVaultView: React.FC<CanonVaultViewProps> = ({
                   <span>Cargar Imagen</span>
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="image/png"
                     onChange={(e) => handleFileUpload(e, asset.id)}
                     className="hidden"
                   />
